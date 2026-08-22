@@ -10,6 +10,9 @@ final class SpotSearchService
 {
     private const POINT_BEARINGS = [0, 45, 90, 135, 180, 225, 270, 315];
     private const POINT_DISTANCES_M = [50, 80, 100, 150, 300, 650, 1200];
+    private const NEARBY_BEARINGS = [0, 45, 90, 135, 180, 225, 270, 315];
+    private const NEARBY_DISTANCES_M = [50, 100, 150, 200];
+    private const MAX_COAST_DISTANCE_M = 200;
 
     private const PROFILES = [
         'surfcasting' => ['label' => 'Surfcasting', 'aliases' => ['surfcasting', 'surf casting', 'beach casting', 'casting', 'ψάρεμα παραλίας', 'παραλία'], 'depth' => [4, 12, 2, 18], 'waves' => [0.35, 1.25, 1.9], 'species' => ['τσιπούρα', 'λαβράκι', 'σαργός', 'κέφαλος', 'μελανούρι', 'σαλάχια'], 'bait' => ['σκουλήκι', 'καλαμάρι', 'γαρίδα', 'φιλέτο σαρδέλας', 'μύδι'], 'times' => ['σούρουπο', 'πρώτες ώρες νύχτας', 'ξημέρωμα'], 'advice' => 'Ξεκίνα στα 60-120μ και μετά μίκρυνε τη βολή αν τα ψάρια τρώνε στο πρώτο αυλάκι.', 'fit' => ['beach' => 98, 'bay' => 82, 'estuary' => 84, 'shoal' => 78, 'headland' => 58, 'breakwater' => 52, 'rocky' => 45, 'harbour' => 40, 'pier' => 62, 'reef' => 48, 'marina' => 25, 'fallback' => 55]],
@@ -29,8 +32,6 @@ final class SpotSearchService
         'estuary' => [1, 5, 11, 'gentle', 'mud', 'low'], 'marina' => [3, 7, 14, 'flat', 'harbour', 'medium'],
         'bay' => [2, 7, 16, 'gentle', 'sand', 'low'], 'fallback' => [2, 7, 15, 'gentle', 'unknown', 'unknown'],
     ];
-
-    private const CATEGORIES = ['beach', 'breakwater', 'rocky', 'bay', 'headland', 'pier', 'harbour', 'marina'];
 
     public function __construct(
         private readonly HttpClientInterface $http,
@@ -79,7 +80,7 @@ final class SpotSearchService
         }
 
         $cacheEnabled = $mode !== 'point' || $cachePointAnalysis;
-        $keyData = ['version' => 11, 'mode' => $mode, 'query' => mb_strtolower(preg_replace('/\s+/u', ' ', $query) ?? $query), 'radiusKm' => $radius, 'resultLimit' => $limit, 'locationOnly' => ($body['locationOnly'] ?? false) === true, 'coordinates' => $coordinates ? ['lat' => round($location['lat'], 6), 'lon' => round($location['lon'], 6)] : null, 'locationLabel' => $coordinates ? $location['displayName'] : null, 'gpsAccuracyM' => $gpsAccuracyM];
+        $keyData = ['version' => 13, 'mode' => $mode, 'query' => mb_strtolower(preg_replace('/\s+/u', ' ', $query) ?? $query), 'radiusKm' => $radius, 'resultLimit' => $limit, 'locationOnly' => ($body['locationOnly'] ?? false) === true, 'coordinates' => $coordinates ? ['lat' => round($location['lat'], 6), 'lon' => round($location['lon'], 6)] : null, 'locationLabel' => $coordinates ? $location['displayName'] : null, 'gpsAccuracyM' => $gpsAccuracyM];
         $cacheKey = 'spots_'.hash('sha256', json_encode($keyData, JSON_THROW_ON_ERROR));
         $cached = null;
         if ($cacheEnabled) {
@@ -96,20 +97,38 @@ final class SpotSearchService
         if ($mode === 'point') {
             $response = $this->analyzePoint($location, $intent, $gpsAccuracyM, $cacheEnabled);
         } else {
-            $candidates = $this->candidates($location, $radius, max($limit, min(96, $limit * 3)));
-            $depthProfiles = $this->depthProfiles($candidates, $location);
+            $candidates = $this->candidates($location, $radius, max($limit, min(48, $limit * 2)));
+            $depthProfiles = $this->depthProfiles($candidates);
+            if ($candidates !== [] && $depthProfiles === []) {
+                throw new ApiException('Η υπηρεσία βυθομετρίας δεν είναι προσωρινά διαθέσιμη.', 503);
+            }
+            $validatedCandidates = array_values(array_filter(
+                $candidates,
+                fn (array $candidate): bool => $this->isValidatedNearbyCandidate($depthProfiles[$candidate['id']] ?? null, $intent['technique']),
+            ));
             $conditions = $this->conditions($location);
-            $spots = $this->rank($candidates, $intent, $conditions, $depthProfiles, $limit);
+            $spots = $this->rank($validatedCandidates, $intent, $conditions, $depthProfiles, $limit);
+            $warnings = $conditions['warnings'];
+            if ($candidates === []) {
+                $warnings[] = 'Δεν βρέθηκαν χαρτογραφημένα παράκτια σημεία στην επιλεγμένη ακτίνα.';
+            } elseif (count($validatedCandidates) < count($candidates)) {
+                $warnings[] = $intent['technique'] === 'boat-fishing'
+                    ? sprintf('Απορρίφθηκαν %d σημεία χωρίς επιβεβαιωμένο νερό στην ακριβή θέση.', count($candidates) - count($validatedCandidates))
+                    : sprintf('Απορρίφθηκαν %d σημεία χωρίς επιβεβαιωμένη ακτή εντός %dμ.', count($candidates) - count($validatedCandidates), self::MAX_COAST_DISTANCE_M);
+            }
+            if (count($spots) < $limit) {
+                $warnings[] = sprintf('Εμφανίζονται μόνο %d επιβεβαιωμένα παράκτια σημεία αντί για %d.', count($spots), $limit);
+            }
             $response = [
                 'mode' => 'nearby',
                 'intent' => $intent,
                 'location' => $location,
                 'generatedAt' => gmdate('Y-m-d\TH:i:s.v\Z'),
                 'resultLimit' => $limit,
-                'candidateCount' => count($candidates),
+                'candidateCount' => count($validatedCandidates),
                 'cache' => ['hit' => false, 'source' => 'new', 'entries' => $this->cacheEntries(), 'maxAgeSeconds' => 3600, 'ageSeconds' => 0],
                 'spots' => $spots,
-                'warnings' => $conditions['warnings'],
+                'warnings' => $warnings,
                 'attributions' => ['© OpenStreetMap contributors', 'Open-Meteo', 'OpenTopoData / GEBCO'],
             ];
         }
@@ -195,36 +214,52 @@ final class SpotSearchService
     private function candidates(array $center, float $radiusKm, int $target): array
     {
         $candidates = [];
-        $endpoint = trim($this->overpassEndpoint) ?: 'https://overpass.private.coffee/api/interpreter';
+        $configuredEndpoint = trim($this->overpassEndpoint);
+        $endpoints = array_values(array_unique(array_filter([
+            $configuredEndpoint !== '' ? $configuredEndpoint : null,
+            'https://maps.mail.ru/osm/tools/overpass/api/interpreter',
+            'https://overpass.private.coffee/api/interpreter',
+        ])));
         $meters = (int) round($radiusKm * 1000);
         $query = sprintf('[out:json][timeout:20];(nwr(around:%d,%.6f,%.6f)["natural"~"beach|cape|bay|reef|shoal|rock|cliff"];nwr(around:%d,%.6f,%.6f)["man_made"~"pier|breakwater|groyne|quay|lighthouse"];nwr(around:%d,%.6f,%.6f)["leisure"="marina"];nwr(around:%d,%.6f,%.6f)["harbour"];);out center tags %d;', $meters, $center['lat'], $center['lon'], $meters, $center['lat'], $center['lon'], $meters, $center['lat'], $center['lon'], $meters, $center['lat'], $center['lon'], max(80, $target * 3));
-        try {
-            $data = $this->http->request('POST', $endpoint, ['body' => ['data' => $query], 'headers' => ['User-Agent' => 'FishingSpotter/1.0 Symfony'], 'timeout' => 24])->toArray(false);
-            foreach ($data['elements'] ?? [] as $element) {
-                $lat = $element['lat'] ?? $element['center']['lat'] ?? null;
-                $lon = $element['lon'] ?? $element['center']['lon'] ?? null;
-                if (!is_numeric($lat) || !is_numeric($lon)) {
-                    continue;
+        $overpassCache = $this->upstreamCache->getItem('overpass_v3_'.hash('sha256', $query));
+        $data = $overpassCache->isHit() ? $overpassCache->get() : null;
+        if (!is_array($data)) {
+            foreach ($endpoints as $endpoint) {
+                try {
+                    $httpResponse = $this->http->request('POST', $endpoint, ['body' => ['data' => $query], 'headers' => ['User-Agent' => 'FishingSpotter/1.0 Symfony'], 'timeout' => 24]);
+                    $response = $httpResponse->getStatusCode() === 200 ? $httpResponse->toArray(false) : null;
+                    if (is_array($response) && is_array($response['elements'] ?? null) && empty($response['remark'])) {
+                        $data = $response;
+                        $overpassCache->set($data);
+                        $overpassCache->expiresAfter(86400);
+                        $this->upstreamCache->save($overpassCache);
+                        break;
+                    }
+                } catch (\Throwable) {
                 }
-                $tags = is_array($element['tags'] ?? null) ? $element['tags'] : [];
-                $category = $this->category($tags);
-                $distance = $this->distance($center['lat'], $center['lon'], (float) $lat, (float) $lon);
-                if ($distance > $radiusKm) {
-                    continue;
-                }
-                $id = ($element['type'] ?? 'node').':'.($element['id'] ?? count($candidates));
-                $candidates[$id] = ['id' => $id, 'osmType' => $element['type'] ?? 'node', 'osmId' => isset($element['id']) ? (int) $element['id'] : null, 'name' => $tags['name'] ?? $this->categoryName($category), 'category' => $category, 'lat' => (float) $lat, 'lon' => (float) $lon, 'distanceKm' => round($distance, 2), 'tags' => array_map('strval', $tags), 'access' => ['rating' => in_array($category, ['rocky', 'headland', 'reef'], true) ? 'hard' : 'moderate', 'notes' => []], 'dataQuality' => 'osm'];
             }
-        } catch (\Throwable) {
+        }
+        if (!is_array($data)) {
+            throw new ApiException('Η υπηρεσία χαρτογραφημένων σημείων δεν είναι προσωρινά διαθέσιμη.', 503);
+        }
+        foreach ($data['elements'] ?? [] as $element) {
+            $lat = $element['lat'] ?? $element['center']['lat'] ?? null;
+            $lon = $element['lon'] ?? $element['center']['lon'] ?? null;
+            if (!is_numeric($lat) || !is_numeric($lon)) {
+                continue;
+            }
+            $tags = is_array($element['tags'] ?? null) ? $element['tags'] : [];
+            $category = $this->category($tags);
+            $distance = $this->distance($center['lat'], $center['lon'], (float) $lat, (float) $lon);
+            if ($distance > $radiusKm) {
+                continue;
+            }
+            $id = ($element['type'] ?? 'node').':'.($element['id'] ?? count($candidates));
+            $candidates[$id] = ['id' => $id, 'osmType' => $element['type'] ?? 'node', 'osmId' => isset($element['id']) ? (int) $element['id'] : null, 'name' => $tags['name'] ?? $this->categoryName($category), 'category' => $category, 'lat' => (float) $lat, 'lon' => (float) $lon, 'distanceKm' => round($distance, 2), 'tags' => array_map('strval', $tags), 'access' => ['rating' => in_array($category, ['rocky', 'headland', 'reef'], true) ? 'hard' : 'moderate', 'notes' => []], 'dataQuality' => 'osm'];
         }
         $candidates = array_values($candidates);
         usort($candidates, static fn (array $a, array $b): int => $a['distanceKm'] <=> $b['distanceKm']);
-        for ($i = count($candidates); $i < $target; ++$i) {
-            $category = self::CATEGORIES[$i % count(self::CATEGORIES)];
-            $distance = max(0.7, $radiusKm * (0.18 + (($i % 7) / 10)));
-            $point = $this->destination($center['lat'], $center['lon'], $distance, (75 + $i * 37) % 360);
-            $candidates[] = ['id' => 'fallback:'.round($point['lat'], 5).','.round($point['lon'], 5), 'osmType' => 'fallback', 'name' => $this->categoryName($category).' εκτίμησης '.($i + 1), 'category' => $category, 'lat' => $point['lat'], 'lon' => $point['lon'], 'distanceKm' => round($distance, 2), 'tags' => [], 'access' => ['rating' => in_array($category, ['rocky', 'headland'], true) ? 'hard' : 'moderate', 'notes' => ['Η πρόσβαση χρειάζεται επιτόπιο έλεγχο.']], 'dataQuality' => 'generated'];
-        }
 
         return array_slice($candidates, 0, $target);
     }
@@ -518,20 +553,35 @@ final class SpotSearchService
         return ['weather' => array_filter($weather, static fn (mixed $value): bool => $value !== null), 'marine' => array_filter($marine, static fn (mixed $value): bool => $value !== null), 'warnings' => $warnings];
     }
 
-    private function depthProfiles(array $candidates, array $center): array
+    private function depthProfiles(array $candidates): array
     {
-        $cacheKey = 'depth_'.hash('sha256', json_encode(array_map(static fn (array $candidate): array => [round($candidate['lat'], 5), round($candidate['lon'], 5)], $candidates), JSON_THROW_ON_ERROR));
+        if ($candidates === []) {
+            return [];
+        }
+        $bearings = count($candidates) > 36 ? [0, 90, 180, 270] : self::NEARBY_BEARINGS;
+        $cacheData = [
+            'version' => 3,
+            'dataset' => $this->openTopoDataset,
+            'interpolation' => 'bilinear',
+            'bearings' => $bearings,
+            'distancesM' => self::NEARBY_DISTANCES_M,
+            'locations' => array_map(static fn (array $candidate): array => [$candidate['id'], round($candidate['lat'], 6), round($candidate['lon'], 6)], $candidates),
+        ];
+        $cacheKey = 'depth_'.hash('sha256', json_encode($cacheData, JSON_THROW_ON_ERROR));
 
-        return $this->cachedUpstream($cacheKey, 604800, function () use ($candidates, $center): array {
+        $cached = $this->upstreamCache->getItem($cacheKey);
+        if ($cached->isHit() && is_array($cached->get())) {
+            return $cached->get();
+        }
+        $profiles = (function () use ($candidates, $bearings): array {
             $samples = [];
-            foreach ($candidates as $index => $candidate) {
-                $bearing = $this->bearing($center['lat'], $center['lon'], $candidate['lat'], $candidate['lon']);
-                if ($candidate['distanceKm'] < 0.1) {
-                    $bearing = (75 + $index * 37) % 360;
-                }
-                foreach ([50, 100, 150] as $distanceM) {
-                    $point = $this->destination($candidate['lat'], $candidate['lon'], $distanceM / 1000, $bearing);
-                    $samples[] = ['spotId' => $candidate['id'], 'distanceM' => $distanceM, 'bearing' => $bearing, ...$point];
+            foreach ($candidates as $candidate) {
+                $samples[] = ['spotId' => $candidate['id'], 'distanceM' => 0, 'bearing' => null, 'lat' => $candidate['lat'], 'lon' => $candidate['lon']];
+                foreach ($bearings as $bearing) {
+                    foreach (self::NEARBY_DISTANCES_M as $distanceM) {
+                        $point = $this->destination($candidate['lat'], $candidate['lon'], $distanceM / 1000, $bearing);
+                        $samples[] = ['spotId' => $candidate['id'], 'distanceM' => $distanceM, 'bearing' => $bearing, ...$point];
+                    }
                 }
             }
 
@@ -542,93 +592,188 @@ final class SpotSearchService
 
             $grouped = [];
             foreach ($samples as $sample) {
-                if (!isset($sample['elevation']) || $sample['elevation'] > 0) {
+                if (!is_numeric($sample['elevation'] ?? null)) {
                     continue;
                 }
-                $sample['depthM'] = abs($sample['elevation']);
                 $grouped[$sample['spotId']][] = $sample;
             }
             $profiles = [];
-            foreach ($grouped as $spotId => $wetSamples) {
-                if (count($wetSamples) < 2) {
+            foreach ($candidates as $candidate) {
+                $spotId = $candidate['id'];
+                $measuredSamples = $grouped[$spotId] ?? [];
+                if ($measuredSamples === []) {
                     continue;
                 }
-                usort($wetSamples, static fn (array $a, array $b): int => $a['distanceM'] <=> $b['distanceM']);
-                $depths = array_column($wetSamples, 'depthM');
+                $wetSamples = [];
+                $drySamples = [];
+                $exactIsWater = null;
+                foreach ($measuredSamples as $sample) {
+                    $elevation = (float) $sample['elevation'];
+                    if ($sample['distanceM'] === 0) {
+                        $exactIsWater = $elevation < 0 ? true : ($elevation > 0 ? false : null);
+                    }
+                    if ($elevation < 0) {
+                        $wetSamples[] = [...$sample, 'depthM' => abs($elevation)];
+                    } elseif ($elevation > 0) {
+                        $drySamples[] = $sample;
+                    }
+                }
+                $waterDistanceM = $wetSamples === [] ? null : min(array_column($wetSamples, 'distanceM'));
+                $landDistanceM = $drySamples === [] ? null : min(array_column($drySamples, 'distanceM'));
+                $bearingGroups = [];
+                foreach ($wetSamples as $sample) {
+                    if ($sample['distanceM'] > 0 && $sample['bearing'] !== null) {
+                        $bearingGroups[(int) $sample['bearing']][] = $sample;
+                    }
+                }
+                $choices = [];
+                foreach ($bearingGroups as $bearing => $bearingSamples) {
+                    usort($bearingSamples, static fn (array $a, array $b): int => $a['distanceM'] <=> $b['distanceM']);
+                    $choices[] = [
+                        'bearing' => $bearing,
+                        'samples' => $bearingSamples,
+                        'score' => count($bearingSamples) * 100 + max(array_column($bearingSamples, 'depthM')) - min(array_column($bearingSamples, 'distanceM')) / 100,
+                    ];
+                }
+                usort($choices, static fn (array $a, array $b): int => $b['score'] <=> $a['score']);
+                $choice = $choices[0] ?? null;
+                $profileSamples = $choice['samples'] ?? [];
+                if ($exactIsWater === true) {
+                    foreach ($wetSamples as $sample) {
+                        if ($sample['distanceM'] === 0) {
+                            array_unshift($profileSamples, $sample);
+                            break;
+                        }
+                    }
+                }
+                $depths = array_column($profileSamples, 'depthM');
                 sort($depths);
                 $middle = intdiv(count($depths), 2);
-                $casting = count($depths) % 2 ? $depths[$middle] : ($depths[$middle - 1] + $depths[$middle]) / 2;
-                $range = max($depths) - min($depths);
-                $slopeRatio = $range / max(1, max(array_column($wetSamples, 'distanceM')));
-                $slope = $slopeRatio > 0.045 ? 'steep' : ($slopeRatio > 0.022 ? 'moderate' : ($slopeRatio > 0.008 ? 'gentle' : 'flat'));
+                $casting = $depths === [] ? null : (count($depths) % 2 ? $depths[$middle] : ($depths[$middle - 1] + $depths[$middle]) / 2);
+                $slope = 'unknown';
+                if (count($profileSamples) >= 2) {
+                    $range = max($depths) - min($depths);
+                    $slopeRatio = $range / max(1, max(array_column($profileSamples, 'distanceM')));
+                    $slope = $slopeRatio > 0.045 ? 'steep' : ($slopeRatio > 0.022 ? 'moderate' : ($slopeRatio > 0.008 ? 'gentle' : 'flat'));
+                }
                 $profiles[$spotId] = [
-                    'closest' => min($depths),
+                    'hasNearbyWater' => $wetSamples !== [],
+                    'exactIsWater' => $exactIsWater,
+                    'waterDistanceM' => $waterDistanceM,
+                    'landDistanceM' => $landDistanceM,
+                    'closest' => $depths === [] ? null : min($depths),
                     'casting' => $casting,
-                    'max' => max($depths),
+                    'max' => $depths === [] ? null : max($depths),
                     'slope' => $slope,
-                    'bearing' => $wetSamples[0]['bearing'],
-                    'points' => array_map(static fn (array $sample): array => ['distanceM' => $sample['distanceM'], 'depthM' => round($sample['depthM'], 1), 'lat' => $sample['lat'], 'lon' => $sample['lon'], 'confidence' => 'measured'], $wetSamples),
+                    'bearing' => $choice['bearing'] ?? null,
+                    'points' => array_map(static fn (array $sample): array => ['distanceM' => $sample['distanceM'], 'depthM' => round($sample['depthM'], 1), 'lat' => $sample['lat'], 'lon' => $sample['lon'], 'confidence' => 'measured'], array_values(array_filter($profileSamples, static fn (array $sample): bool => $sample['distanceM'] > 0))),
+                    'sampleCount' => count($measuredSamples),
+                    'confidence' => count($profileSamples) >= 4 ? 'high' : (count($profileSamples) >= 2 ? 'medium' : 'low'),
                 ];
             }
 
             return $profiles;
-        });
+        })();
+        if ($profiles !== []) {
+            $cached->set($profiles);
+            $cached->expiresAfter(604800);
+            $this->upstreamCache->save($cached);
+        }
+
+        return $profiles;
+    }
+
+    private function isValidatedNearbyCandidate(?array $depth, string $technique): bool
+    {
+        if ($depth === null || !$depth['hasNearbyWater']) {
+            return false;
+        }
+        if ($technique === 'boat-fishing') {
+            return $depth['exactIsWater'] === true;
+        }
+
+        return is_numeric($depth['waterDistanceM'])
+            && $depth['waterDistanceM'] <= self::MAX_COAST_DISTANCE_M
+            && is_numeric($depth['landDistanceM'])
+            && $depth['landDistanceM'] <= self::MAX_COAST_DISTANCE_M;
     }
 
     private function sampleElevations(array $samples): array
     {
         $successfulBatches = 0;
+        $batchCount = (int) ceil(count($samples) / 90);
+        $lastRequestAt = null;
         for ($offset = 0; $offset < count($samples); $offset += 90) {
             $batch = array_slice($samples, $offset, 90);
             try {
+                if ($lastRequestAt !== null) {
+                    $waitMicroseconds = (int) max(0, (1 - (microtime(true) - $lastRequestAt)) * 1_000_000);
+                    if ($waitMicroseconds > 0) {
+                        usleep($waitMicroseconds);
+                    }
+                }
+                $lastRequestAt = microtime(true);
                 $payload = $this->http->request('POST', 'https://api.opentopodata.org/v1/'.rawurlencode($this->openTopoDataset), [
                     'json' => ['locations' => implode('|', array_map(static fn (array $sample): string => $sample['lat'].','.$sample['lon'], $batch)), 'interpolation' => 'bilinear'],
                     'headers' => ['Accept' => 'application/json'],
                     'timeout' => 22,
                 ])->toArray(false);
-                if (($payload['status'] ?? null) !== 'OK' || !is_array($payload['results'] ?? null)) {
+                if (($payload['status'] ?? null) !== 'OK' || !is_array($payload['results'] ?? null) || count($payload['results']) !== count($batch)) {
                     continue;
                 }
+                $complete = true;
                 foreach ($payload['results'] as $resultIndex => $result) {
-                    if (isset($batch[$resultIndex]) && is_numeric($result['elevation'] ?? null)) {
-                        $samples[$offset + $resultIndex]['elevation'] = (float) $result['elevation'];
+                    if (!isset($batch[$resultIndex]) || !is_numeric($result['elevation'] ?? null)) {
+                        $complete = false;
+                        break;
                     }
+                    $samples[$offset + $resultIndex]['elevation'] = (float) $result['elevation'];
+                }
+                if (!$complete) {
+                    continue;
                 }
                 ++$successfulBatches;
             } catch (\Throwable) {
             }
         }
 
-        return $successfulBatches > 0 ? $samples : [];
+        return $successfulBatches === $batchCount ? $samples : [];
     }
 
     private function rank(array $candidates, array $intent, array $conditions, array $depthProfiles, int $limit): array
     {
         $profile = self::PROFILES[$intent['technique']];
         $spots = [];
-        foreach ($candidates as $index => $candidate) {
+        foreach ($candidates as $candidate) {
             [$closest, $casting, $max, $slope, $seabed, $snag] = self::DEPTHS[$candidate['category']] ?? self::DEPTHS['fallback'];
             $measuredDepth = $depthProfiles[$candidate['id']] ?? null;
-            if ($measuredDepth) {
-                $closest = $measuredDepth['closest'];
-                $casting = $measuredDepth['casting'];
-                $max = $measuredDepth['max'];
-                $slope = $measuredDepth['slope'];
+            if ($measuredDepth === null || !is_numeric($measuredDepth['casting'])) {
+                continue;
             }
+            $closest = $measuredDepth['closest'];
+            $casting = $measuredDepth['casting'];
+            $max = $measuredDepth['max'];
+            $slope = $measuredDepth['slope'];
             $depthScore = $this->rangeScore($casting, $profile['depth']);
             $fitScore = $profile['fit'][$candidate['category']] ?? 55;
             $accessScore = ['easy' => 92, 'moderate' => 70, 'hard' => 42, 'restricted' => 18, 'unknown' => 55][$candidate['access']['rating']] ?? 55;
             $wave = $conditions['marine']['waveHeightM'] ?? null;
             $conditionScore = is_numeric($wave) ? $this->rangeScore((float) $wave, [$profile['waves'][0], $profile['waves'][1], 0, $profile['waves'][2]]) : 58;
             $score = (int) round($fitScore * 0.4 + $depthScore * 0.3 + $accessScore * 0.15 + $conditionScore * 0.15);
-            $factor = ['steep' => 1.45, 'moderate' => 1.18, 'gentle' => 0.92, 'flat' => 0.72][$slope] ?? 0.9;
             $depthRange = $this->depthRange($casting, $profile);
             $conditionsLabel = $this->conditionsLabel($conditions);
+            $depth = ['source' => 'opentopodata-gebco2020', 'hasNearbyWater' => true, 'shoreDistanceM' => $measuredDepth['waterDistanceM'], 'closestFishableDepthM' => $closest, 'castingDepthM' => $casting, 'maxDepthM' => $max, 'castingProfile' => $measuredDepth['points'], 'slope' => $slope, 'seabedType' => $seabed, 'snagRisk' => $snag, 'style' => $this->depthStyle($slope), 'sampleCount' => $measuredDepth['sampleCount'], 'confidence' => $measuredDepth['confidence']];
+            if ($measuredDepth['exactIsWater'] !== null) {
+                $depth['isSpotInWater'] = $measuredDepth['exactIsWater'];
+            }
+            if ($measuredDepth['bearing'] !== null) {
+                $depth['waterBearingDeg'] = $measuredDepth['bearing'];
+            }
             $spots[] = [...$candidate,
                 'score' => $score,
                 'summary' => sprintf('%s για %s: %s, περίπου %.0fμ βάθος στη ζώνη βολής.', $score >= 75 ? 'Πολύ καλή προοπτική' : ($score >= 60 ? 'Καλή προοπτική' : 'Μέτρια προοπτική'), $profile['label'], $this->categoryName($candidate['category']), $casting),
-                'depth' => ['source' => $measuredDepth ? 'opentopodata-gebco2020' : 'estimated', 'hasNearbyWater' => true, 'isSpotInWater' => false, 'shoreDistanceM' => 0, 'waterBearingDeg' => $measuredDepth['bearing'] ?? (75 + $index * 37) % 360, 'closestFishableDepthM' => $closest, 'castingDepthM' => $casting, 'maxDepthM' => $max, 'castingProfile' => $measuredDepth['points'] ?? [['distanceM' => 50, 'depthM' => round(max(0.8, $casting * 0.5 * $factor), 1), 'confidence' => 'estimated'], ['distanceM' => 100, 'depthM' => round(max(0.8, $casting * $factor), 1), 'confidence' => 'estimated'], ['distanceM' => 150, 'depthM' => round(max(0.8, $casting * 1.5 * $factor), 1), 'confidence' => 'estimated']], 'slope' => $slope, 'seabedType' => $seabed, 'snagRisk' => $snag, 'style' => $this->depthStyle($slope), 'sampleCount' => 3, 'confidence' => $measuredDepth ? 'low' : 'low'],
-                'marine' => $conditions['marine'], 'weather' => $conditions['weather'], 'likelyFish' => $profile['species'], 'recommendedTechniques' => [$profile['label']], 'bait' => $profile['bait'], 'castingAdvice' => $profile['advice'], 'bestWindow' => implode(', ', $profile['times']), 'depthStyle' => $this->depthStyle($slope), 'techniqueDepthRange' => $depthRange, 'depthSourceLabel' => $measuredDepth ? 'OpenTopoData / GEBCO 2020' : 'Εκτίμηση βάσει μορφολογίας και κατηγορίας σημείου', 'seabedLabel' => $this->seabedLabel($seabed), 'snagRiskLabel' => ['low' => 'χαμηλά', 'medium' => 'μέτρια', 'high' => 'υψηλά', 'unknown' => 'άγνωστα'][$snag], 'confidenceLabel' => $measuredDepth ? 'Δημόσια δείγματα GEBCO κατά μήκος της βολής' : ($candidate['dataQuality'] === 'osm' ? 'OSM σημείο με εκτιμώμενο βάθος' : 'Παράκτια εκτίμηση, χρειάζεται επιβεβαίωση'), 'conditionsLabel' => $conditionsLabel, 'warnings' => array_values(array_filter([$candidate['dataQuality'] === 'generated' ? 'Το σημείο είναι παράκτια εκτίμηση και όχι επιβεβαιωμένη θέση.' : null, $conditionScore < 35 ? 'Οι συνθήκες είναι έξω από το ασφαλές εύρος της τεχνικής.' : null])), 'breakdown' => [['key' => 'technique', 'label' => 'Καταλληλότητα τεχνικής', 'score' => $fitScore, 'weight' => 40, 'explanation' => 'Συνδυασμός τεχνικής και τύπου ακτής.'], ['key' => 'depth', 'label' => 'Βάθος', 'score' => $depthScore, 'weight' => 30, 'explanation' => $depthRange['label']], ['key' => 'access', 'label' => 'Πρόσβαση', 'score' => $accessScore, 'weight' => 15, 'explanation' => 'Εκτίμηση από τον τύπο σημείου.'], ['key' => 'conditions', 'label' => 'Συνθήκες', 'score' => $conditionScore, 'weight' => 15, 'explanation' => $conditionsLabel]],
+                'depth' => $depth,
+                'marine' => $conditions['marine'], 'weather' => $conditions['weather'], 'likelyFish' => $profile['species'], 'recommendedTechniques' => [$profile['label']], 'bait' => $profile['bait'], 'castingAdvice' => $profile['advice'], 'bestWindow' => implode(', ', $profile['times']), 'depthStyle' => $this->depthStyle($slope), 'techniqueDepthRange' => $depthRange, 'depthSourceLabel' => 'OpenTopoData / GEBCO 2020', 'seabedLabel' => $this->seabedLabel($seabed), 'snagRiskLabel' => ['low' => 'χαμηλά', 'medium' => 'μέτρια', 'high' => 'υψηλά', 'unknown' => 'άγνωστα'][$snag], 'confidenceLabel' => 'Δημόσια δείγματα GEBCO γύρω από το χαρτογραφημένο σημείο', 'conditionsLabel' => $conditionsLabel, 'warnings' => array_values(array_filter([$conditionScore < 35 ? 'Οι συνθήκες είναι έξω από το ασφαλές εύρος της τεχνικής.' : null])), 'breakdown' => [['key' => 'technique', 'label' => 'Καταλληλότητα τεχνικής', 'score' => $fitScore, 'weight' => 40, 'explanation' => 'Συνδυασμός τεχνικής και τύπου ακτής.'], ['key' => 'depth', 'label' => 'Βάθος', 'score' => $depthScore, 'weight' => 30, 'explanation' => $depthRange['label']], ['key' => 'access', 'label' => 'Πρόσβαση', 'score' => $accessScore, 'weight' => 15, 'explanation' => 'Εκτίμηση από τον τύπο σημείου.'], ['key' => 'conditions', 'label' => 'Συνθήκες', 'score' => $conditionScore, 'weight' => 15, 'explanation' => $conditionsLabel]],
             ];
         }
         usort($spots, static fn (array $a, array $b): int => $b['score'] <=> $a['score']);
@@ -735,16 +880,6 @@ final class SpotSearchService
         $lon2 = $lon1 + atan2(sin($bearing) * sin($angular) * cos($lat1), cos($angular) - sin($lat1) * sin($lat2));
 
         return ['lat' => rad2deg($lat2), 'lon' => fmod(rad2deg($lon2) + 540, 360) - 180];
-    }
-
-    private function bearing(float $lat1, float $lon1, float $lat2, float $lon2): float
-    {
-        $lat1 = deg2rad($lat1);
-        $lat2 = deg2rad($lat2);
-        $deltaLon = deg2rad($lon2 - $lon1);
-        $angle = rad2deg(atan2(sin($deltaLon) * cos($lat2), cos($lat1) * sin($lat2) - sin($lat1) * cos($lat2) * cos($deltaLon)));
-
-        return fmod($angle + 360, 360);
     }
 
     private function cachedUpstream(string $key, int $ttl, callable $loader): mixed
