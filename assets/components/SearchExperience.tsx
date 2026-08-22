@@ -1,9 +1,9 @@
 "use client";
 
-import { FormEvent, useEffect, useState, useTransition } from "react";
+import { FormEvent, type ReactNode, useEffect, useState, useTransition } from "react";
 import { FishingMap, type MapBaseLayer } from "./FishingMap";
 import { UserConnectPanel } from "./UserConnectPanel";
-import type { ApiUser, Coordinates, CreateTripInput, RankedSpot, SavedFishingTrip, SpotsApiResponse, TechniqueId, TripFishRecord, TripVisibility } from "@/lib/types";
+import type { ApiUser, Coordinates, CreateTripInput, PointAnalysis, RankedSpot, SavedFishingTrip, SpotsApiRequest, SpotsApiResponse, SpotSearchMode, TechniqueId, TripFishRecord, TripVisibility } from "@/lib/types";
 import { TECHNIQUE_PROFILES } from "@/lib/techniqueProfiles";
 import { connectUsername, createTrip as createTripApi, deleteTrip as deleteTripApi, fetchTrips, setTripVisibility as setTripVisibilityApi } from "@/lib/client/api";
 
@@ -55,6 +55,7 @@ export function SearchExperience() {
   const [selectedSpotId, setSelectedSpotId] = useState<string | undefined>();
   const [infoSpotId, setInfoSpotId] = useState<string | undefined>();
   const [pickedPoint, setPickedPoint] = useState<Coordinates | undefined>();
+  const [gpsAccuracyM, setGpsAccuracyM] = useState<number | undefined>();
   const [customTripPoint, setCustomTripPoint] = useState<Coordinates | undefined>();
   const [tripPanelOpen, setTripPanelOpen] = useState(false);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
@@ -82,6 +83,8 @@ export function SearchExperience() {
       locationOnly?: boolean;
       coordinates?: { lat: number; lon: number };
       locationLabel?: string;
+      mode?: SpotSearchMode;
+      gpsAccuracyM?: number;
     } = {},
   ) {
     setError(undefined);
@@ -90,24 +93,28 @@ export function SearchExperience() {
     const normalizedLimit = normalizeResultLimit(resultLimit);
     const normalizedRadiusKm = normalizeRadiusKm(radiusKm);
     const locationOnly = options.locationOnly === true;
-    const cacheKey = searchCacheKey(searchQuery, normalizedLimit, normalizedRadiusKm, locationOnly, options.coordinates);
+    const mode = options.mode ?? "nearby";
+    const cacheKey = searchCacheKey(searchQuery, normalizedLimit, normalizedRadiusKm, locationOnly, mode, options.coordinates, options.gpsAccuracyM);
 
     startTransition(async () => {
       try {
+        const requestBody: SpotsApiRequest = {
+          mode,
+          query: searchQuery,
+          resultLimit: normalizedLimit,
+          radiusKm: normalizedRadiusKm,
+          locationOnly,
+          coordinates: options.coordinates,
+          locationLabel: options.locationLabel,
+          gpsAccuracyM: mode === "point" ? options.gpsAccuracyM : undefined,
+        };
         const result = await fetch("/api/spots", {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
             ...(activeUser ? { "X-Fishing-User": activeUser.username } : {}),
           },
-          body: JSON.stringify({
-            query: searchQuery,
-            resultLimit: normalizedLimit,
-            radiusKm: normalizedRadiusKm,
-            locationOnly,
-            coordinates: options.coordinates,
-            locationLabel: options.locationLabel,
-          }),
+          body: JSON.stringify(requestBody),
         });
 
         const payload = (await result.json()) as SpotsApiResponse | { error: string };
@@ -117,7 +124,7 @@ export function SearchExperience() {
 
         const spotsPayload = payload as SpotsApiResponse;
         const firstSpot = spotsPayload.spots[0];
-        const fallbackTripPoint = options.coordinates ?? (pickedPoint && locationInput.startsWith("Σημείο χάρτη") ? pickedPoint : undefined);
+        const fallbackTripPoint = options.coordinates ?? pickedPoint;
         clientCache.set(cacheKey, spotsPayload);
         setResponse(spotsPayload);
         setSelectedSpotId(firstSpot?.id);
@@ -126,8 +133,8 @@ export function SearchExperience() {
         setSettingsOpen(false);
         setCacheMessage(
           spotsPayload.cache.hit
-            ? `Server cache (${spotsPayload.spots.length} σημεία, ${spotsPayload.cache.ageSeconds ?? 0}s).`
-            : `Νέα σάρωση (${spotsPayload.spots.length} σημεία).`,
+            ? `Server cache (${mode === "point" ? "ανάλυση σημείου" : `${spotsPayload.spots.length} σημεία`}, ${spotsPayload.cache.ageSeconds ?? 0}s).`
+            : mode === "point" ? "Νέα ανάλυση σημείου." : `Νέα σάρωση (${spotsPayload.spots.length} σημεία).`,
         );
       } catch (searchError) {
         setError(searchError instanceof Error ? searchError.message : "Η αναζήτηση απέτυχε");
@@ -137,8 +144,8 @@ export function SearchExperience() {
 
   function onSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (pickedPoint && locationInput.startsWith("Σημείο χάρτη")) {
-      searchPickedPoint();
+    if (pickedPoint) {
+      searchNearbyPickedPoint();
       return;
     }
 
@@ -165,8 +172,15 @@ export function SearchExperience() {
       };
       const label = "Η θέση μου";
       setPickedPoint(coordinates);
+      setGpsAccuracyM(Number.isFinite(position.coords.accuracy) ? position.coords.accuracy : undefined);
+      setCustomTripPoint(coordinates);
       setLocationInput(label);
-      void runSearch(searchQueryFromState(technique, label, targetFish, timeHint), { coordinates, locationLabel: label });
+      setResponse(undefined);
+      setSelectedSpotId(undefined);
+      setInfoSpotId(undefined);
+      setTripPanelOpen(false);
+      setSettingsOpen(true);
+      setCacheMessage("Η θέση GPS επιλέχθηκε. Διάλεξε ανάλυση ακριβώς εδώ ή αναζήτηση κοντινών σημείων.");
     } catch (gpsError) {
       setError(gpsError instanceof Error ? gpsError.message : "Δεν μπορέσαμε να πάρουμε την τρέχουσα τοποθεσία.");
     } finally {
@@ -176,6 +190,7 @@ export function SearchExperience() {
 
   function handleMapPoint(coordinates: Coordinates) {
     setPickedPoint(coordinates);
+    setGpsAccuracyM(undefined);
     setCustomTripPoint(coordinates);
     setLocationInput(mapPointLocationLabel(coordinates));
     setResponse(undefined);
@@ -183,34 +198,57 @@ export function SearchExperience() {
     setInfoSpotId(undefined);
     setTripPanelOpen(false);
     setSettingsOpen(true);
-    setCacheMessage("Διαλέχτηκε σημείο στον χάρτη. Πάτα Αναζήτηση εδώ για σάρωση γύρω από αυτό.");
+    setCacheMessage("Διαλέχτηκε σημείο στον χάρτη. Διάλεξε ανάλυση ακριβώς εδώ ή αναζήτηση κοντινών σημείων.");
   }
 
-  function searchPickedPoint() {
+  function analyzePickedPoint() {
     if (!pickedPoint) {
       return;
     }
 
-    const label = mapPointLocationLabel(pickedPoint);
+    const label = locationInput === "Η θέση μου" ? locationInput : mapPointLocationLabel(pickedPoint);
     setCustomTripPoint(pickedPoint);
     setLocationInput(label);
     void runSearch(searchQueryFromState(technique, label, targetFish, timeHint), {
       coordinates: pickedPoint,
-      locationLabel: "Επιλεγμένο σημείο χάρτη",
+      locationLabel: label,
+      mode: "point",
+      gpsAccuracyM,
+    });
+  }
+
+  function searchNearbyPickedPoint() {
+    if (!pickedPoint) {
+      return;
+    }
+
+    const label = locationInput === "Η θέση μου" ? locationInput : mapPointLocationLabel(pickedPoint);
+    setCustomTripPoint(pickedPoint);
+    setLocationInput(label);
+    void runSearch(searchQueryFromState(technique, label, targetFish, timeHint), {
+      coordinates: pickedPoint,
+      locationLabel: label,
+      mode: "nearby",
     });
   }
 
   function clearPickedPoint() {
     setPickedPoint(undefined);
+    setGpsAccuracyM(undefined);
     setCustomTripPoint(undefined);
     setCacheMessage(undefined);
-    if (locationInput.startsWith("Σημείο χάρτη")) {
-      setLocationInput(response?.intent.locationText ?? "Γύθειο");
+    if (response?.mode === "point") {
+      setResponse(undefined);
+      setSelectedSpotId(undefined);
+      setInfoSpotId(undefined);
+    }
+    if (locationInput.startsWith("Σημείο χάρτη") || locationInput === "Η θέση μου") {
+      setLocationInput(response?.mode === "point" ? "Γύθειο" : response?.intent.locationText ?? "Γύθειο");
     }
   }
 
   function openTripPanel(spot?: RankedSpot) {
-    const targetSpot = spot ?? (!pickedPoint ? selectedSpot : undefined);
+    const targetSpot = spot ?? (response?.mode === "point" || !pickedPoint ? selectedSpot : undefined);
 
     if (targetSpot) {
       setSelectedSpotId(targetSpot.id);
@@ -263,7 +301,8 @@ export function SearchExperience() {
 
   async function saveTrip() {
     const tripSpot = customTripPoint ? undefined : selectedSpot;
-    const tripPoint = customTripPoint ?? (tripSpot ? { lat: tripSpot.lat, lon: tripSpot.lon } : undefined);
+    const pointAnalysis = response?.mode === "point" ? response.pointAnalysis : undefined;
+    const tripPoint = customTripPoint ?? pointAnalysis?.requestedPoint ?? (tripSpot ? { lat: tripSpot.lat, lon: tripSpot.lon } : undefined);
 
     if (!activeUser) {
       setError("Συνδέσου με username πριν αποθηκεύσεις εξόρμηση.");
@@ -285,7 +324,7 @@ export function SearchExperience() {
       tripDate: tripDate ? new Date(tripDate).toISOString() : new Date().toISOString(),
       technique: tripSpot ? response?.intent.technique ?? technique : technique,
       techniqueLabel: tripSpot ? response?.intent.techniqueLabel ?? TECHNIQUE_PROFILES[technique].label : TECHNIQUE_PROFILES[technique].label,
-      locationName: tripSpot?.name ?? mapPointLocationLabel(tripPoint),
+      locationName: pointAnalysis ? response?.location.displayName ?? mapPointLocationLabel(tripPoint) : tripSpot?.name ?? mapPointLocationLabel(tripPoint),
       lat: tripPoint.lat,
       lon: tripPoint.lon,
       spotId: tripSpot?.id,
@@ -310,6 +349,7 @@ export function SearchExperience() {
       setTripNotes("");
       if (customTripPoint) {
         setPickedPoint(undefined);
+        setGpsAccuracyM(undefined);
         setCustomTripPoint(undefined);
       }
       setCacheMessage(`Αποθηκεύτηκε ${trip.visibility === "public" ? "δημόσια" : "ιδιωτική"} εξόρμηση στο ${trip.locationName}.`);
@@ -428,6 +468,8 @@ export function SearchExperience() {
         loading={isPending || gpsLoading}
         baseLayer={baseLayer}
         pickedPoint={pickedPoint}
+        mode={response?.mode}
+        pointAnalysis={response?.pointAnalysis}
         trips={trips}
         onPickPoint={handleMapPoint}
       />
@@ -469,15 +511,15 @@ export function SearchExperience() {
             {activeUser ? `@${activeUser.username}` : "Connect"}
           </button>
 
-          {pickedPoint && !response && !settingsOpen && !tripPanelOpen && !infoSpot && (
-            <button
-              type="button"
-              onClick={searchPickedPoint}
-              disabled={isPending || gpsLoading}
-              className="rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white shadow-glow transition hover:bg-ink disabled:cursor-wait disabled:opacity-60"
-            >
-              Αναζήτηση εδώ
-            </button>
+          {pickedPoint && !settingsOpen && !tripPanelOpen && !infoSpot && (
+            <div className="flex flex-wrap gap-2">
+              <button type="button" onClick={analyzePickedPoint} disabled={isPending || gpsLoading} className="rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white shadow-glow transition hover:bg-ink disabled:cursor-wait disabled:opacity-60">
+                Ανάλυση εδώ
+              </button>
+              <button type="button" onClick={searchNearbyPickedPoint} disabled={isPending || gpsLoading} className="rounded-2xl bg-lagoon px-4 py-3 text-sm font-black text-white shadow-glow transition hover:bg-ink disabled:cursor-wait disabled:opacity-60">
+                Σημεία κοντά
+              </button>
+            </div>
           )}
 
         </div>
@@ -589,12 +631,19 @@ export function SearchExperience() {
               <div className="rounded-2xl border border-kelp/20 bg-kelp/10 p-3 text-xs font-bold leading-5 text-kelp">
                 <p className="font-black uppercase tracking-[0.16em]">Σημείο χάρτη</p>
                 <p className="mt-1">{pickedPoint.lat.toFixed(5)}, {pickedPoint.lon.toFixed(5)}</p>
+                {typeof gpsAccuracyM === "number" && <p>Ακρίβεια GPS ±{Math.round(gpsAccuracyM)}μ</p>}
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <button type="button" onClick={clearPickedPoint} className="rounded-xl border border-kelp/30 bg-white px-3 py-2 text-kelp">
-                    Καθαρισμός σημείου
+                  <button type="button" onClick={analyzePickedPoint} disabled={isPending || gpsLoading} className="rounded-xl bg-kelp px-3 py-2 text-white disabled:opacity-60">
+                    Ανάλυση εδώ
                   </button>
-                  <button type="button" onClick={() => openTripPanel(undefined)} className="rounded-xl bg-kelp px-3 py-2 text-white">
+                  <button type="button" onClick={searchNearbyPickedPoint} disabled={isPending || gpsLoading} className="rounded-xl bg-lagoon px-3 py-2 text-white disabled:opacity-60">
+                    Σημεία κοντά
+                  </button>
+                  <button type="button" onClick={() => openTripPanel(undefined)} className="rounded-xl border border-kelp/30 bg-white px-3 py-2 text-kelp">
                     Trip εδώ
+                  </button>
+                  <button type="button" onClick={clearPickedPoint} className="rounded-xl border border-kelp/30 bg-white px-3 py-2 text-kelp">
+                    Καθαρισμός
                   </button>
                 </div>
               </div>
@@ -602,7 +651,7 @@ export function SearchExperience() {
 
             <div className="grid grid-cols-2 gap-2">
               <button type="submit" disabled={isPending || gpsLoading} className="rounded-2xl bg-lagoon px-3 py-3 text-sm font-black text-white transition hover:bg-ink disabled:cursor-wait disabled:opacity-60">
-                {isPending ? "Σάρωση" : pickedPoint && locationInput.startsWith("Σημείο χάρτη") ? "Αναζήτηση εδώ" : "Αναζήτηση"}
+                {isPending ? "Σάρωση" : pickedPoint ? "Σημεία κοντά" : "Αναζήτηση"}
               </button>
               <button type="button" onClick={() => void searchGpsLocation()} disabled={isPending || gpsLoading} className="rounded-2xl border border-tide/40 bg-tide/10 px-4 py-3 text-sm font-black text-lagoon transition hover:bg-lagoon hover:text-white disabled:cursor-wait disabled:opacity-60">
                 {gpsLoading ? "GPS..." : "GPS"}
@@ -630,7 +679,7 @@ export function SearchExperience() {
         </div>
       )}
 
-      {response && !infoSpot && !tripPanelOpen && !settingsOpen && (
+      {response && response.mode !== "point" && !infoSpot && !tripPanelOpen && !settingsOpen && (
         <section className="absolute bottom-3 left-3 right-3 z-20 max-h-[37svh] overflow-hidden rounded-[1.4rem] border border-white/80 bg-white/95 p-3 shadow-glow backdrop-blur sm:bottom-4 sm:left-4 sm:right-auto sm:max-h-none sm:max-w-[34rem]">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
@@ -672,7 +721,18 @@ export function SearchExperience() {
         </section>
       )}
 
-      {infoSpot && <SpotInfoSheet spot={infoSpot} onSaveTrip={() => openTripPanel(infoSpot)} onClose={() => setInfoSpotId(undefined)} />}
+      {response?.mode === "point" && response.pointAnalysis && selectedSpot && !tripPanelOpen && !settingsOpen && (
+        <PointAnalysisSheet
+          analysis={response.pointAnalysis}
+          response={response}
+          spot={selectedSpot}
+          gpsAccuracyM={gpsAccuracyM}
+          onSaveTrip={() => openTripPanel(selectedSpot)}
+          onClose={() => setSettingsOpen(true)}
+        />
+      )}
+
+      {response?.mode !== "point" && infoSpot && <SpotInfoSheet spot={infoSpot} onSaveTrip={() => openTripPanel(infoSpot)} onClose={() => setInfoSpotId(undefined)} />}
       {tripPanelOpen && (
         <TripLogSheet
           response={response}
@@ -705,6 +765,137 @@ export function SearchExperience() {
         />
       )}
     </main>
+  );
+}
+
+function PointAnalysisSheet({
+  analysis,
+  response,
+  spot,
+  gpsAccuracyM,
+  onSaveTrip,
+  onClose,
+}: {
+  analysis: PointAnalysis;
+  response: SpotsApiResponse;
+  spot: RankedSpot;
+  gpsAccuracyM?: number;
+  onSaveTrip: () => void;
+  onClose: () => void;
+}) {
+  const accuracy = analysis.gpsAccuracyM ?? gpsAccuracyM;
+  const cast = analysis.castRecommendation;
+  const hasWater = spot.depth.hasNearbyWater;
+  const warnings = uniqueValues([...response.warnings, ...spot.warnings]);
+
+  return (
+    <section className="absolute bottom-0 left-0 right-0 z-40 max-h-[70svh] overflow-y-auto rounded-t-[1.8rem] border border-white/80 bg-white p-4 shadow-glow sm:bottom-4 sm:left-4 sm:right-auto sm:max-h-[78svh] sm:w-[31rem] sm:rounded-[1.8rem]">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-kelp">Ανάλυση σημείου</p>
+          <h2 className="mt-1 text-xl font-black text-ink">{spot.name}</h2>
+          <p className={`mt-2 rounded-2xl px-3 py-2 text-sm font-black leading-5 ${!hasWater ? "border border-red-200 bg-red-50 text-red-800" : analysis.adjustedToWater ? "border border-amber-200 bg-amber-50 text-amber-900" : "border border-tide/25 bg-tide/10 text-lagoon"}`}>
+            {!hasWater
+              ? "Δεν εντοπίστηκε μετρημένο νερό έως 1,2χλμ από το επιλεγμένο σημείο."
+              : analysis.adjustedToWater
+              ? `Κοντινότερο δειγματοληπτικό σημείο νερού στα ${formatMetric(analysis.waterDistanceM, "μ", 0)}${typeof analysis.waterBearingDeg === "number" ? ` προς ${formatBearing(analysis.waterBearingDeg)}` : ""}.`
+              : "Το επιλεγμένο στίγμα αναλύθηκε ακριβώς στο νερό."}
+          </p>
+        </div>
+        <div className="grid shrink-0 gap-2">
+          <button type="button" onClick={onSaveTrip} className="rounded-full bg-kelp px-3 py-1.5 text-xs font-black text-white">Trip</button>
+          <button type="button" onClick={onClose} className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-600">x</button>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-2 text-xs font-bold text-ink">
+        <InfoRow label="Ζητήθηκε" value={formatCoordinates(analysis.requestedPoint)} />
+        <InfoRow label="Αναλύθηκε" value={formatCoordinates(analysis.analyzedPoint)} />
+        <InfoRow label="Απόσταση νερού" value={hasWater ? formatMetric(analysis.waterDistanceM, "μ", 0) : unavailable()} />
+        <InfoRow label="Ακρίβεια GPS" value={typeof accuracy === "number" ? `±${formatMetric(accuracy, "μ", 0)}` : unavailable()} />
+      </div>
+
+      <AnalysisSection title="Τρέχων καιρός">
+        <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:grid-cols-3">
+          <AnalysisMetric label="Θερμοκρασία" value={formatMetric(spot.weather.airTemperatureC, "°C")} />
+          <AnalysisMetric label="Αισθητή" value={formatMetric(spot.weather.apparentTemperatureC, "°C")} />
+          <AnalysisMetric label="Άνεμος" value={formatWind(spot.weather.windSpeedKmh, spot.weather.windDirectionDeg)} />
+          <AnalysisMetric label="Ριπές" value={formatMetric(spot.weather.gustKmh, "km/h")} />
+          <AnalysisMetric label="Υγρασία" value={formatMetric(spot.weather.relativeHumidityPct, "%", 0)} />
+          <AnalysisMetric label="Πίεση" value={formatPressure(spot.weather.pressureHpa, spot.weather.pressureTrend)} />
+          <AnalysisMetric label="Βροχή" value={formatMetric(spot.weather.precipitationMm, "mm")} />
+          <AnalysisMetric label="Νέφωση" value={formatMetric(spot.weather.cloudCoverPct, "%", 0)} />
+          <AnalysisMetric label="Ορατότητα" value={formatVisibility(spot.weather.visibilityM)} />
+        </div>
+      </AnalysisSection>
+
+      <AnalysisSection title="Θάλασσα">
+        <div className="grid grid-cols-2 gap-2 text-xs font-bold sm:grid-cols-3">
+          <AnalysisMetric label="Κύμα" value={formatSeaState(spot.marine.waveHeightM, spot.marine.waveDirectionDeg, spot.marine.wavePeriodS)} />
+          <AnalysisMetric label="Swell" value={formatSeaState(spot.marine.swellHeightM, spot.marine.swellDirectionDeg, spot.marine.swellPeriodS)} />
+          <AnalysisMetric label="Θερμ. νερού" value={formatMetric(spot.marine.seaSurfaceTemperatureC, "°C")} />
+          <AnalysisMetric label="Ρεύμα" value={formatWind(spot.marine.currentSpeedKmh, spot.marine.currentDirectionDeg)} />
+          <AnalysisMetric label="Στάθμη MSL" value={formatMetric(spot.marine.seaLevelMslM, "μ")} />
+          <AnalysisMetric label="Βεβαιότητα" value={confidenceLabel(spot.marine.confidence)} />
+        </div>
+      </AnalysisSection>
+
+      <AnalysisSection title="Βάθος και βυθός">
+        <div className="grid grid-cols-2 gap-2 text-xs font-bold">
+          <InfoRow label="Βάθος βολής" value={formatMetric(spot.depth.castingDepthM, "μ")} />
+          <InfoRow label="Κοντινό ψαρεύσιμο" value={formatMetric(spot.depth.closestFishableDepthM, "μ")} />
+          <InfoRow label="Μέγιστο δείγμα" value={formatMetric(spot.depth.maxDepthM, "μ")} />
+          <InfoRow label="Κλίση" value={spot.depthStyle || unavailable()} />
+          <InfoRow label="Πηγή" value={spot.depthSourceLabel || unavailable()} />
+          <InfoRow label="Βεβαιότητα" value={confidenceLabel(spot.depth.confidence)} />
+          <InfoRow label="Βυθός" value={spot.seabedLabel || unavailable()} />
+          <InfoRow label="Σκαλώματα" value={spot.snagRiskLabel || unavailable()} />
+        </div>
+        <DepthProfileGraphic spot={spot} />
+      </AnalysisSection>
+
+      <AnalysisSection title="Πρόταση βολής">
+        {cast ? (
+          <div className="space-y-2">
+            <div className="grid grid-cols-2 gap-2 text-xs font-bold">
+              <InfoRow label="Κατεύθυνση" value={`${formatBearing(cast.bearingDeg)}${cast.direction ? ` · ${cast.direction}` : ""}`} />
+              <InfoRow label="Απόσταση" value={formatMetric(cast.distanceM, "μ", 0)} />
+              <InfoRow label="Στόχος" value={formatCoordinates(cast.target)} />
+              <InfoRow label="Βάθος στόχου" value={formatMetric(cast.targetDepthM, "μ")} />
+              <InfoRow label="Βεβαιότητα" value={confidenceLabel(cast.confidence)} />
+            </div>
+            <p className="rounded-2xl bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-700">{cast.rationale || unavailable()}</p>
+          </div>
+        ) : (
+          <p className="rounded-2xl bg-slate-50 p-3 text-sm font-semibold text-slate-600">Δεν υπάρχει διαθέσιμη πρόταση βολής.</p>
+        )}
+      </AnalysisSection>
+
+      {warnings.length > 0 && (
+        <div className="mt-3 rounded-2xl border border-amber-200 bg-amber-50 p-3 text-xs font-bold leading-5 text-amber-900">
+          <p className="text-[10px] font-black uppercase tracking-[0.18em]">Προειδοποιήσεις</p>
+          <p className="mt-1">{warnings.join(" ")}</p>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function AnalysisSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div className="mt-3 border-t border-slate-100 pt-3">
+      <p className="mb-2 text-[10px] font-black uppercase tracking-[0.18em] text-lagoon">{title}</p>
+      {children}
+    </div>
+  );
+}
+
+function AnalysisMetric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-2xl bg-slate-50 px-3 py-2">
+      <p className="text-[10px] font-black uppercase tracking-[0.14em] text-slate-400">{label}</p>
+      <p className="mt-1 leading-5 text-ink">{value}</p>
+    </div>
   );
 }
 
@@ -799,6 +990,8 @@ function TripLogSheet({
   onChangeTripVisibility: (id: string, visibility: TripVisibility) => void;
 }) {
   const tripSpot = customTripPoint ? undefined : selectedSpot;
+  const pointMode = response?.mode === "point";
+  const tripCoordinates = pointMode && response?.pointAnalysis ? response.pointAnalysis.requestedPoint : tripSpot;
   const fishOptions = uniqueValues([...(tripSpot?.likelyFish ?? []), ...POPULAR_TARGET_FISH]).slice(0, 10);
   const canSave = Boolean(activeUser && (tripSpot || customTripPoint) && tripFishRecords.length > 0 && !tripSaving);
 
@@ -835,7 +1028,7 @@ function TripLogSheet({
               className="w-full rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm font-bold outline-none transition focus:border-tide focus:bg-white focus:ring-4 focus:ring-tide/15"
             >
               {response.spots.map((spot) => (
-                <option key={spot.id} value={spot.id}>#{spot.rank} {spot.name}</option>
+                <option key={spot.id} value={spot.id}>{pointMode ? spot.name : `#${spot.rank} ${spot.name}`}</option>
               ))}
             </select>
           </label>
@@ -850,8 +1043,8 @@ function TripLogSheet({
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-lagoon">Snapshot που θα αποθηκευτεί</p>
             <p className="mt-1 text-sm font-black text-ink">{tripSpot.name}</p>
             <div className="mt-3 grid gap-2 text-xs sm:grid-cols-2">
-              <TripMetric label="Στίγμα" value={`${tripSpot.lat.toFixed(5)}, ${tripSpot.lon.toFixed(5)}`} />
-              <TripMetric label="Σκορ" value={`${tripSpot.score}/100`} />
+              <TripMetric label="Στίγμα trip" value={tripCoordinates ? `${tripCoordinates.lat.toFixed(5)}, ${tripCoordinates.lon.toFixed(5)}` : unavailable()} />
+              {!pointMode && <TripMetric label="Σκορ" value={`${tripSpot.score}/100`} />}
               <TripMetric label="Καιρός/θάλασσα" value={tripSpot.conditionsLabel} />
               <TripMetric label="Βυθός" value={`${tripSpot.techniqueDepthRange.label} ${tripSpot.seabedLabel}`} />
             </div>
@@ -1145,14 +1338,24 @@ function SelectedSpotSummary({ spot }: { spot: RankedSpot }) {
   );
 }
 
-function searchCacheKey(query: string, resultLimit: number, radiusKm: number, locationOnly: boolean, coordinates?: { lat: number; lon: number }): string {
+function searchCacheKey(
+  query: string,
+  resultLimit: number,
+  radiusKm: number,
+  locationOnly: boolean,
+  mode: SpotSearchMode,
+  coordinates?: Coordinates,
+  gpsAccuracyM?: number,
+): string {
   return JSON.stringify({
-    version: 6,
+    version: 7,
+    mode,
     query: query.trim().toLowerCase().replace(/\s+/g, " "),
     resultLimit,
     radiusKm,
     locationOnly,
     coordinates: coordinates ? { lat: Number(coordinates.lat.toFixed(5)), lon: Number(coordinates.lon.toFixed(5)) } : undefined,
+    gpsAccuracyM: typeof gpsAccuracyM === "number" ? Math.round(gpsAccuracyM) : undefined,
   });
 }
 
@@ -1179,6 +1382,65 @@ function normalizeRadiusKm(value: number): number {
 
 function mapPointLocationLabel(coordinates: Coordinates): string {
   return `Σημείο χάρτη ${coordinates.lat.toFixed(5)}, ${coordinates.lon.toFixed(5)}`;
+}
+
+function unavailable(): string {
+  return "Μη διαθέσιμο";
+}
+
+function formatMetric(value: number | undefined, unit: string, digits = 1): string {
+  return typeof value === "number" && Number.isFinite(value) ? `${value.toFixed(digits)}${unit}` : unavailable();
+}
+
+function formatCoordinates(point: Coordinates): string {
+  return `${point.lat.toFixed(5)}, ${point.lon.toFixed(5)}`;
+}
+
+function formatBearing(value: number): string {
+  const normalized = ((value % 360) + 360) % 360;
+  return `${Math.round(normalized)}°`;
+}
+
+function formatWind(speed?: number, bearing?: number): string {
+  const parts = [
+    typeof speed === "number" && Number.isFinite(speed) ? `${speed.toFixed(1)}km/h` : undefined,
+    typeof bearing === "number" && Number.isFinite(bearing) ? formatBearing(bearing) : undefined,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : unavailable();
+}
+
+function formatSeaState(height?: number, bearing?: number, period?: number): string {
+  const parts = [
+    typeof height === "number" && Number.isFinite(height) ? `${height.toFixed(1)}μ` : undefined,
+    typeof bearing === "number" && Number.isFinite(bearing) ? formatBearing(bearing) : undefined,
+    typeof period === "number" && Number.isFinite(period) ? `${period.toFixed(1)}s` : undefined,
+  ].filter(Boolean);
+  return parts.length ? parts.join(" · ") : unavailable();
+}
+
+function formatPressure(value: number | undefined, trend: RankedSpot["weather"]["pressureTrend"]): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return unavailable();
+  }
+  const trends: Record<RankedSpot["weather"]["pressureTrend"], string> = {
+    rising: "ανοδική",
+    falling: "πτωτική",
+    stable: "σταθερή",
+    unknown: "άγνωστη τάση",
+  };
+  return `${value.toFixed(0)}hPa · ${trends[trend]}`;
+}
+
+function formatVisibility(value?: number): string {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return unavailable();
+  }
+  return value >= 1000 ? `${(value / 1000).toFixed(1)}χλμ` : `${Math.round(value)}μ`;
+}
+
+function confidenceLabel(confidence: "high" | "medium" | "low" | "none"): string {
+  const labels = { high: "Υψηλή", medium: "Μέτρια", low: "Χαμηλή", none: "Μη διαθέσιμη" } as const;
+  return labels[confidence];
 }
 
 function normalizeFishCount(value: string): number {

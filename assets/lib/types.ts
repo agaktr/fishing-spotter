@@ -32,6 +32,19 @@ export interface Coordinates {
   lon: number;
 }
 
+export type SpotSearchMode = "nearby" | "point";
+
+export interface SpotsApiRequest {
+  mode?: SpotSearchMode;
+  query: string;
+  coordinates?: Coordinates;
+  locationLabel?: string;
+  gpsAccuracyM?: number;
+  resultLimit?: number;
+  radiusKm?: number;
+  locationOnly?: boolean;
+}
+
 export interface SearchIntent {
   raw: string;
   technique: TechniqueId;
@@ -166,7 +179,28 @@ export interface RankedSpot extends CandidateSpot {
   breakdown: FactorScore[];
 }
 
+export interface CastRecommendation {
+  bearingDeg: number;
+  direction: string;
+  distanceM: number;
+  target: Coordinates;
+  targetDepthM?: number;
+  rationale: string;
+  confidence: "high" | "medium" | "low" | "none";
+}
+
+export interface PointAnalysis {
+  requestedPoint: Coordinates;
+  analyzedPoint: Coordinates;
+  adjustedToWater: boolean;
+  waterDistanceM: number;
+  waterBearingDeg?: number;
+  gpsAccuracyM?: number;
+  castRecommendation?: CastRecommendation;
+}
+
 export interface SpotsApiResponse {
+  mode?: SpotSearchMode;
   scanId?: string;
   intent: SearchIntent;
   location: GeocodedLocation;
@@ -181,6 +215,7 @@ export interface SpotsApiResponse {
     ageSeconds?: number;
   };
   spots: RankedSpot[];
+  pointAnalysis?: PointAnalysis;
   warnings: string[];
   attributions: string[];
 }

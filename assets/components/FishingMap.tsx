@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
 import type { FeatureCollection, LineString, Point, Polygon } from "geojson";
-import type { Coordinates, GeocodedLocation, RankedSpot } from "@/lib/types";
+import type { Coordinates, GeocodedLocation, PointAnalysis, RankedSpot, SpotSearchMode } from "@/lib/types";
 import { destinationPoint, round } from "@/lib/geo";
 
 export type MapBaseLayer = "street" | "satellite" | "terrain";
@@ -17,6 +17,8 @@ interface FishingMapProps {
   loading: boolean;
   baseLayer: MapBaseLayer;
   pickedPoint?: Coordinates;
+  mode?: SpotSearchMode;
+  pointAnalysis?: PointAnalysis;
   onSelectSpot: (spotId: string) => void;
   onPickPoint: (coordinates: Coordinates) => void;
 }
@@ -38,7 +40,7 @@ const EMPTY_COLLECTION: MapFeatureCollection = {
   features: [],
 };
 
-export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, pickedPoint, onSelectSpot, onPickPoint }: FishingMapProps) {
+export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, pickedPoint, mode, pointAnalysis, onSelectSpot, onPickPoint }: FishingMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const centerMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -143,6 +145,10 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         data: EMPTY_COLLECTION,
       });
       map.addSource("depth-profile", {
+        type: "geojson",
+        data: EMPTY_COLLECTION,
+      });
+      map.addSource("point-analysis", {
         type: "geojson",
         data: EMPTY_COLLECTION,
       });
@@ -315,6 +321,51 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       });
 
       map.addLayer({
+        id: "point-analysis-lines",
+        type: "line",
+        source: "point-analysis",
+        filter: ["==", ["geometry-type"], "LineString"],
+        paint: {
+          "line-color": ["case", ["==", ["get", "kind"], "adjustment"], "#d97706", "#0b5f6f"],
+          "line-width": ["case", ["==", ["get", "kind"], "adjustment"], 2, 4],
+          "line-dasharray": [2, 1.5],
+        },
+      });
+
+      map.addLayer({
+        id: "point-analysis-points",
+        type: "circle",
+        source: "point-analysis",
+        filter: ["==", ["geometry-type"], "Point"],
+        paint: {
+          "circle-radius": ["match", ["get", "kind"], "requested", 9, "analyzed", 11, "target", 10, 6],
+          "circle-color": ["match", ["get", "kind"], "requested", "#d97706", "analyzed", "#19a7ce", "target", "#09202a", "#0b5f6f"],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 3,
+        },
+      });
+
+      map.addLayer({
+        id: "point-analysis-labels",
+        type: "symbol",
+        source: "point-analysis",
+        filter: ["all", ["==", ["geometry-type"], "Point"], ["!=", ["get", "kind"], "profile"]],
+        layout: {
+          "text-field": ["get", "label"],
+          "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+          "text-size": 11,
+          "text-offset": [0, 1.45],
+          "text-anchor": "top",
+          "text-allow-overlap": false,
+        },
+        paint: {
+          "text-color": "#09202a",
+          "text-halo-color": "#ffffff",
+          "text-halo-width": 2,
+        },
+      });
+
+      map.addLayer({
         id: "spots-circle",
         type: "circle",
         source: "spots",
@@ -407,7 +458,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       map.on("click", "spots-rank", selectSpot);
 
       map.on("click", (event) => {
-        const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "trips-circle", "trips-label"] });
+        const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "point-analysis-points", "point-analysis-labels", "trips-circle", "trips-label"] });
         if (existingFeatures.length > 0) {
           return;
         }
@@ -475,7 +526,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
 
     const update = () => {
       const source = map.getSource("picked-point") as maplibregl.GeoJSONSource | undefined;
-      source?.setData(toPickedPointCollection(pickedPoint));
+      source?.setData(toPickedPointCollection(pointAnalysis ? undefined : pickedPoint));
     };
 
     if (map.getSource("picked-point")) {
@@ -486,7 +537,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         map.off("load", update);
       };
     }
-  }, [pickedPoint]);
+  }, [pickedPoint, pointAnalysis]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -529,6 +580,27 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       const radiusSource = map.getSource("radius") as maplibregl.GeoJSONSource | undefined;
       const depthProfileSource = map.getSource("depth-profile") as maplibregl.GeoJSONSource | undefined;
       const searchCenterSource = map.getSource("search-center") as maplibregl.GeoJSONSource | undefined;
+      const pointAnalysisSource = map.getSource("point-analysis") as maplibregl.GeoJSONSource | undefined;
+
+      if (mode === "point" && pointAnalysis) {
+        const pointData = toPointAnalysisCollection(pointAnalysis, spots[0]);
+        spotSource?.setData(EMPTY_COLLECTION);
+        radiusSource?.setData(EMPTY_COLLECTION);
+        depthProfileSource?.setData(EMPTY_COLLECTION);
+        searchCenterSource?.setData(EMPTY_COLLECTION);
+        pointAnalysisSource?.setData(pointData);
+        centerMarkerRef.current?.remove();
+        centerMarkerRef.current = null;
+
+        const fitKey = pointAnalysisFitKey(pointAnalysis);
+        if (lastFitKeyRef.current !== fitKey) {
+          fitPointAnalysis(map, pointAnalysis, spots[0]);
+          lastFitKeyRef.current = fitKey;
+        }
+        return;
+      }
+
+      pointAnalysisSource?.setData(EMPTY_COLLECTION);
 
       if (!location) {
         spotSource?.setData(EMPTY_COLLECTION);
@@ -576,7 +648,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         map.off("load", update);
       };
     }
-  }, [location, radiusKm, selectedSpotId, spots]);
+  }, [location, mode, pointAnalysis, radiusKm, selectedSpotId, spots]);
 
   return (
     <div className="relative h-full min-h-[100svh] w-full">
@@ -743,11 +815,116 @@ function toPickedPointCollection(point?: Coordinates): MapFeatureCollection {
           coordinates: [point.lon, point.lat],
         },
         properties: {
-          label: "Αναζήτηση εδώ",
+          label: "Επιλεγμένο σημείο",
         },
       },
     ],
   };
+}
+
+function toPointAnalysisCollection(analysis: PointAnalysis, spot?: RankedSpot): MapFeatureCollection {
+  const features: MapFeatureCollection["features"] = [];
+  const profilePoints = spot?.depth.castingProfile.filter(hasMapCoordinates) ?? [];
+
+  if (spot && !spot.depth.hasNearbyWater) {
+    features.push(pointFeature(analysis.requestedPoint, "requested", "Δεν βρέθηκε μετρημένο νερό"));
+    return { type: "FeatureCollection", features };
+  }
+
+  if (analysis.adjustedToWater) {
+    features.push(pointFeature(analysis.requestedPoint, "requested", "Ζητήθηκε"));
+    features.push({
+      type: "Feature",
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [analysis.requestedPoint.lon, analysis.requestedPoint.lat],
+          [analysis.analyzedPoint.lon, analysis.analyzedPoint.lat],
+        ],
+      },
+      properties: { kind: "adjustment" },
+    });
+  }
+
+  features.push(pointFeature(
+    analysis.analyzedPoint,
+    "analyzed",
+    analysis.castRecommendation ? "" : analysis.adjustedToWater ? "Κοντινότερο νερό" : "Σημείο ανάλυσης",
+  ));
+
+  const recommendation = analysis.castRecommendation;
+  if (recommendation) {
+    features.push({
+      type: "Feature",
+      geometry: { type: "LineString", coordinates: [
+        [analysis.requestedPoint.lon, analysis.requestedPoint.lat],
+        [recommendation.target.lon, recommendation.target.lat],
+      ] },
+      properties: { kind: "cast" },
+    });
+  }
+
+  for (const point of profilePoints) {
+    features.push(pointFeature(
+      { lat: point.lat, lon: point.lon },
+      "profile",
+      typeof point.depthM === "number" ? `${point.distanceM}μ / ${round(point.depthM, 1)}μ` : `${point.distanceM}μ`,
+    ));
+  }
+
+  if (recommendation) {
+    features.push(pointFeature(
+      recommendation.target,
+      "target",
+      typeof recommendation.targetDepthM === "number" ? `Στόχος ${round(recommendation.targetDepthM, 1)}μ` : "Στόχος βολής",
+    ));
+  }
+
+  return { type: "FeatureCollection", features };
+}
+
+function pointFeature(coordinates: Coordinates, kind: string, label: string): MapFeatureCollection["features"][number] {
+  return {
+    type: "Feature",
+    geometry: { type: "Point", coordinates: [coordinates.lon, coordinates.lat] },
+    properties: { kind, label },
+  };
+}
+
+function hasMapCoordinates(point: RankedSpot["depth"]["castingProfile"][number]): point is typeof point & Required<Pick<typeof point, "lat" | "lon">> {
+  return typeof point.lat === "number" && Number.isFinite(point.lat) && typeof point.lon === "number" && Number.isFinite(point.lon);
+}
+
+function pointAnalysisFitKey(analysis: PointAnalysis): string {
+  const target = analysis.castRecommendation?.target;
+  return `point:${round(analysis.requestedPoint.lat, 5)},${round(analysis.requestedPoint.lon, 5)}:${round(analysis.analyzedPoint.lat, 5)},${round(analysis.analyzedPoint.lon, 5)}:${target ? `${round(target.lat, 5)},${round(target.lon, 5)}` : "none"}`;
+}
+
+function fitPointAnalysis(map: MapLibreMap, analysis: PointAnalysis, spot?: RankedSpot) {
+  const coordinates = [analysis.requestedPoint, analysis.analyzedPoint];
+  for (const point of spot?.depth.castingProfile.filter(hasMapCoordinates) ?? []) {
+    coordinates.push({ lat: point.lat, lon: point.lon });
+  }
+  if (analysis.castRecommendation) {
+    coordinates.push(analysis.castRecommendation.target);
+  }
+
+  const bounds = new maplibregl.LngLatBounds(
+    [coordinates[0].lon, coordinates[0].lat],
+    [coordinates[0].lon, coordinates[0].lat],
+  );
+  for (const point of coordinates.slice(1)) {
+    bounds.extend([point.lon, point.lat]);
+  }
+
+  const desktop = map.getContainer().clientWidth >= 640;
+  map.fitBounds(bounds, {
+    padding: desktop
+      ? { top: 100, bottom: 100, left: 560, right: 80 }
+      : { top: 90, bottom: 610, left: 45, right: 45 },
+    maxZoom: 16,
+    duration: 700,
+  });
 }
 
 function mapFitKey(location: GeocodedLocation, radiusKm: number, spots: RankedSpot[]): string {
@@ -804,12 +981,14 @@ function toDepthProfileCollection(location: GeocodedLocation, selectedSpot?: Ran
     return EMPTY_COLLECTION;
   }
 
-  const bearing = castingBearing(location, selectedSpot);
+  const bearing = points.some((point) => !hasMapCoordinates(point)) ? castingBearing(location, selectedSpot) : undefined;
   const coordinates: number[][] = [[selectedSpot.lon, selectedSpot.lat]];
   const features: MapFeatureCollection["features"] = [];
 
   for (const point of points) {
-    const projected = destinationPoint(selectedSpot, point.distanceM, bearing);
+    const projected = hasMapCoordinates(point)
+      ? { lat: point.lat, lon: point.lon }
+      : destinationPoint(selectedSpot, point.distanceM, bearing ?? 0);
     coordinates.push([projected.lon, projected.lat]);
     features.push({
       type: "Feature",

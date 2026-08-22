@@ -605,6 +605,9 @@ video {
 .mb-1{
   margin-bottom: 0.25rem;
 }
+.mb-2{
+  margin-bottom: 0.5rem;
+}
 .mb-3{
   margin-bottom: 0.75rem;
 }
@@ -683,6 +686,9 @@ video {
 }
 .max-h-\[37svh\]{
   max-height: 37svh;
+}
+.max-h-\[70svh\]{
+  max-height: 70svh;
 }
 .max-h-\[82svh\]{
   max-height: 82svh;
@@ -1119,6 +1125,9 @@ video {
 .leading-6{
   line-height: 1.5rem;
 }
+.tracking-\[0\.14em\]{
+  letter-spacing: 0.14em;
+}
 .tracking-\[0\.15em\]{
   letter-spacing: 0.15em;
 }
@@ -1388,6 +1397,10 @@ input {
     -webkit-line-clamp: 2;
   }
 
+  .sm\:max-h-\[78svh\]{
+    max-height: 78svh;
+  }
+
   .sm\:max-h-none{
     max-height: none;
   }
@@ -1414,6 +1427,10 @@ input {
 
   .sm\:grid-cols-2{
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .sm\:grid-cols-3{
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .sm\:gap-3{

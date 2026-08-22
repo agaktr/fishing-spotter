@@ -34,6 +34,10 @@ final class ApiController extends AbstractController
                 'places' => 'GET /api/places; GET /api/places/:id',
                 'spots' => 'POST /api/spots',
             ],
+            'spotModes' => [
+                'nearby' => 'Default. Finds and ranks nearby candidates.',
+                'point' => 'Requires coordinates {lat, lon}; accepts optional numeric gpsAccuracyM and analyzes only that point.',
+            ],
             'identity' => 'Send X-Fishing-User: <username> for user-specific endpoints.',
         ]);
     }
@@ -163,8 +167,11 @@ final class ApiController extends AbstractController
     {
         $body = $this->body($request);
         $user = $this->repository->requestUser($request->headers->get('X-Fishing-User'), false);
-        $response = $this->search->search($body);
-        $response['scanId'] = $this->repository->recordScan($response, $body, $user);
+        $pointMode = ($body['mode'] ?? 'nearby') === 'point';
+        $response = $this->search->search($body, !$pointMode || $user !== null);
+        if (($response['mode'] ?? 'nearby') !== 'point' || $user !== null) {
+            $response['scanId'] = $this->repository->recordScan($response, $body, $user);
+        }
 
         return $this->json($response);
     }

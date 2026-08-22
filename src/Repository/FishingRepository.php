@@ -143,46 +143,80 @@ final class FishingRepository
     {
         $id = Uuid::v4()->toRfc4122();
         $externalKey = trim((string) ($input['spotId'] ?? '')) ?: sprintf('custom:%.5f,%.5f', $input['lat'], $input['lon']);
-        $placeId = $this->upsertPlace([
-            'externalKey' => $externalKey,
-            'name' => $input['locationName'],
-            'category' => !empty($input['spotId']) ? 'fallback' : 'custom',
-            'lat' => $input['lat'],
-            'lon' => $input['lon'],
-            'dataQuality' => !empty($input['spotId']) ? 'generated' : 'custom',
-            'tags' => [],
-        ]);
         $date = new \DateTimeImmutable($input['tripDate']);
-        $this->db->insert('trips', [
-            'id' => $id,
-            'user_id' => $user['id'],
-            'place_id' => $placeId,
-            'visibility' => $input['visibility'],
-            'trip_date' => $date->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
-            'technique' => $input['technique'],
-            'technique_label' => $input['techniqueLabel'],
-            'location_name' => $input['locationName'],
-            'latitude' => $input['lat'],
-            'longitude' => $input['lon'],
-            'source_spot_id' => $input['spotId'] ?? null,
-            'score' => $input['score'],
-            'fish_records_json' => $this->encode($input['fishRecords']),
-            'notes' => $input['notes'],
-            'conditions_label' => $input['conditionsLabel'],
-            'depth_label' => $input['depthLabel'],
-            'seabed_label' => $input['seabedLabel'],
-            'weather_json' => $this->encode($input['weather']),
-            'marine_json' => $this->encode($input['marine']),
-        ]);
+        $this->db->beginTransaction();
+        try {
+            $placeId = $input['visibility'] === 'public' ? $this->upsertPlace([
+                'externalKey' => $externalKey,
+                'name' => $input['locationName'],
+                'category' => !empty($input['spotId']) ? 'fallback' : 'custom',
+                'lat' => $input['lat'],
+                'lon' => $input['lon'],
+                'dataQuality' => !empty($input['spotId']) ? 'generated' : 'custom',
+                'tags' => [],
+            ]) : null;
+            $this->db->insert('trips', [
+                'id' => $id,
+                'user_id' => $user['id'],
+                'place_id' => $placeId,
+                'visibility' => $input['visibility'],
+                'trip_date' => $date->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
+                'technique' => $input['technique'],
+                'technique_label' => $input['techniqueLabel'],
+                'location_name' => $input['locationName'],
+                'latitude' => $input['lat'],
+                'longitude' => $input['lon'],
+                'source_spot_id' => $input['spotId'] ?? null,
+                'score' => $input['score'],
+                'fish_records_json' => $this->encode($input['fishRecords']),
+                'notes' => $input['notes'],
+                'conditions_label' => $input['conditionsLabel'],
+                'depth_label' => $input['depthLabel'],
+                'seabed_label' => $input['seabedLabel'],
+                'weather_json' => $this->encode($input['weather']),
+                'marine_json' => $this->encode($input['marine']),
+            ]);
+            $this->db->commit();
+        } catch (\Throwable $error) {
+            $this->db->rollBack();
+            throw $error;
+        }
 
         return $this->getTrip($id, $user);
     }
 
     public function updateTripVisibility(string $id, array $user, string $visibility): array
     {
-        $changed = $this->db->executeStatement('UPDATE trips SET visibility = ? WHERE id = ? AND user_id = ?', [$visibility, $id, $user['id']]);
-        if ($changed === 0) {
-            throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
+        $this->db->beginTransaction();
+        try {
+            $row = $this->db->fetchAssociative('SELECT id, place_id, location_name, latitude, longitude, source_spot_id FROM trips WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE', [$id, $user['id']]);
+            if (!$row) {
+                throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
+            }
+            $oldPlaceId = $row['place_id'] !== null ? (int) $row['place_id'] : null;
+            $placeId = null;
+            if ($visibility === 'public') {
+                $externalKey = trim((string) ($row['source_spot_id'] ?? '')) ?: sprintf('custom:%.5f,%.5f', $row['latitude'], $row['longitude']);
+                $placeId = $this->upsertPlace([
+                    'externalKey' => $externalKey,
+                    'name' => $row['location_name'],
+                    'category' => !empty($row['source_spot_id']) ? 'fallback' : 'custom',
+                    'lat' => $row['latitude'],
+                    'lon' => $row['longitude'],
+                    'dataQuality' => !empty($row['source_spot_id']) ? 'generated' : 'custom',
+                    'tags' => [],
+                ]);
+            } elseif ($oldPlaceId !== null) {
+                $this->db->fetchOne('SELECT id FROM places WHERE id = ? FOR UPDATE', [$oldPlaceId]);
+            }
+            $this->db->executeStatement('UPDATE trips SET visibility = ?, place_id = ? WHERE id = ? AND user_id = ?', [$visibility, $placeId, $id, $user['id']]);
+            if ($visibility === 'private' && $oldPlaceId !== null) {
+                $this->deletePlaceIfOrphan($oldPlaceId);
+            }
+            $this->db->commit();
+        } catch (\Throwable $error) {
+            $this->db->rollBack();
+            throw $error;
         }
 
         return $this->getTrip($id, $user);
@@ -190,8 +224,24 @@ final class FishingRepository
 
     public function deleteTrip(string $id, array $user): void
     {
-        if ($this->db->executeStatement('DELETE FROM trips WHERE id = ? AND user_id = ?', [$id, $user['id']]) === 0) {
-            throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
+        $this->db->beginTransaction();
+        try {
+            $row = $this->db->fetchAssociative('SELECT id, place_id FROM trips WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE', [$id, $user['id']]);
+            if (!$row) {
+                throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
+            }
+            $placeId = $row['place_id'] !== null ? (int) $row['place_id'] : null;
+            if ($placeId !== null) {
+                $this->db->fetchOne('SELECT id FROM places WHERE id = ? FOR UPDATE', [$placeId]);
+            }
+            $this->db->delete('trips', ['id' => $id, 'user_id' => $user['id']]);
+            if ($placeId !== null) {
+                $this->deletePlaceIfOrphan($placeId);
+            }
+            $this->db->commit();
+        } catch (\Throwable $error) {
+            $this->db->rollBack();
+            throw $error;
         }
     }
 
@@ -254,15 +304,17 @@ final class FishingRepository
                 'request_json' => $this->encode($requestBody),
                 'response_json' => $this->encode($response),
             ]);
-            foreach ($response['spots'] as $spot) {
-                $placeId = $this->upsertScanPlace($spot);
-                $this->db->insert('scan_places', [
-                    'scan_id' => $id,
-                    'place_id' => $placeId,
-                    'rank_number' => $spot['rank'],
-                    'score' => $spot['score'],
-                    'snapshot_json' => $this->encode($spot),
-                ]);
+            if (($requestBody['mode'] ?? 'nearby') !== 'point') {
+                foreach ($response['spots'] as $spot) {
+                    $placeId = $this->upsertScanPlace($spot);
+                    $this->db->insert('scan_places', [
+                        'scan_id' => $id,
+                        'place_id' => $placeId,
+                        'rank_number' => $spot['rank'],
+                        'score' => $spot['score'],
+                        'snapshot_json' => $this->encode($spot),
+                    ]);
+                }
             }
             $this->db->commit();
         } catch (\Throwable $error) {
@@ -291,6 +343,14 @@ final class FishingRepository
         );
 
         return (int) $this->db->fetchOne('SELECT id FROM places WHERE external_key = ?', [$input['externalKey']]);
+    }
+
+    private function deletePlaceIfOrphan(int $placeId): void
+    {
+        $references = (int) $this->db->fetchOne('SELECT (SELECT COUNT(*) FROM trips WHERE place_id = ?) + (SELECT COUNT(*) FROM scan_places WHERE place_id = ?)', [$placeId, $placeId]);
+        if ($references === 0) {
+            $this->db->delete('places', ['id' => $placeId]);
+        }
     }
 
     private function upsertScanPlace(array $spot): int
