@@ -2,6 +2,8 @@
 
 Symfony 7.4 API and web application for Fishing Spotter. It replaces the Next.js runtime while preserving the existing MariaDB data and the `/api/*` contract used by the Android application.
 
+Production URL: `https://fishing.apto.gr`
+
 ## Requirements
 
 - PHP 8.3 or newer with `ctype`, `iconv`, `json`, `mbstring`, `pdo_mysql` and OpenSSL

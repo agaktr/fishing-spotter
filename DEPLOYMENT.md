@@ -21,6 +21,7 @@ Create `.env.local` on the server using `.env.prod.example` as a guide:
 APP_ENV=prod
 APP_DEBUG=0
 APP_SECRET=replace-with-a-long-random-secret
+DEFAULT_URI=https://fishing.apto.gr
 DATABASE_URL="mysql://user:url-encoded-password@localhost:3306/database?serverVersion=10.11.0-MariaDB&charset=utf8mb4"
 ```
 
