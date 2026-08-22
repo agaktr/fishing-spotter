@@ -4,7 +4,7 @@ Symfony 7.4 API and web application for Fishing Spotter. It replaces the Next.js
 
 ## Requirements
 
-- PHP 8.2 or newer with `ctype`, `iconv`, `json`, `mbstring`, `pdo_mysql` and OpenSSL
+- PHP 8.3 or newer with `ctype`, `iconv`, `json`, `mbstring`, `pdo_mysql` and OpenSSL
 - MariaDB 10.11 or newer
 - Composer 2 when dependencies are not included in the uploaded release
 - Outbound HTTPS access to Nominatim, Overpass, OpenTopoData and Open-Meteo

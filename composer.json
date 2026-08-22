@@ -6,11 +6,11 @@
     "minimum-stability": "stable",
     "prefer-stable": true,
     "require": {
-        "php": ">=8.2",
+        "php": ">=8.3",
         "ext-ctype": "*",
         "ext-iconv": "*",
         "doctrine/dbal": "^4.3",
-        "doctrine/doctrine-bundle": "^3.1",
+        "doctrine/doctrine-bundle": "^2.19",
         "doctrine/doctrine-migrations-bundle": "^3.4",
         "symfony/apache-pack": "^1.0.1",
         "symfony/asset": "^7.4",
@@ -29,6 +29,9 @@
         "symfony/yaml": "7.4.*"
     },
     "config": {
+        "platform": {
+            "php": "8.3.0"
+        },
         "allow-plugins": {
             "php-http/discovery": true,
             "symfony/flex": true,
