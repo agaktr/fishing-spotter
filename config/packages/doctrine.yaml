@@ -1,0 +1,11 @@
+doctrine:
+    dbal:
+        url: '%env(resolve:DATABASE_URL)%'
+        options:
+            1002: "SET NAMES utf8mb4, time_zone = '+00:00'"
+        profiling_collect_backtrace: '%kernel.debug%'
+
+when@test:
+    doctrine:
+        dbal:
+            dbname_suffix: '_test%env(default::TEST_TOKEN)%'
