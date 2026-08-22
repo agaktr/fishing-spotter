@@ -1071,6 +1071,7 @@ function DepthProfileGraphic({ spot, compact = false }: { spot: RankedSpot; comp
   const xStart = 28;
   const xEnd = 252;
   const depthValues = points.map((point) => point.depthM ?? 0).sort((a, b) => a - b);
+  const minDepth = depthValues[0] ?? 0;
   const maxDepth = Math.max(...depthValues, 1);
   const referenceDepth = spot.depth.castingDepthM ?? depthValues[Math.floor(depthValues.length / 2)] ?? maxDepth;
   const visualMaxDepth = Math.max(1, Math.min(maxDepth, Math.max(referenceDepth * 1.8, 12)));
@@ -1085,12 +1086,17 @@ function DepthProfileGraphic({ spot, compact = false }: { spot: RankedSpot; comp
   });
   const linePoints = chartPoints.map((point) => `${point.x},${point.y}`).join(" ");
   const areaPath = `M ${chartPoints[0].x} ${baselineY} L ${linePoints} L ${chartPoints[chartPoints.length - 1].x} ${baselineY} Z`;
+  const minPoint = chartPoints.reduce((current, point) => (point.depthM ?? 0) < (current.depthM ?? 0) ? point : current);
+  const maxPoint = chartPoints.reduce((current, point) => (point.depthM ?? 0) > (current.depthM ?? 0) ? point : current);
 
   return (
     <div className={`${compact ? "mt-2 p-2" : "mt-3 p-3"} rounded-2xl border border-tide/25 bg-gradient-to-b from-sky-50 to-white`}>
       <div className="flex items-center justify-between gap-3">
         <p className="text-[10px] font-black uppercase tracking-[0.18em] text-lagoon">Βάθος βολής</p>
-        <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">max {maxDepth.toFixed(1)}μ</span>
+        <div className="flex gap-1.5">
+          <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">min {minDepth.toFixed(1)}μ</span>
+          <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">max {maxDepth.toFixed(1)}μ</span>
+        </div>
       </div>
       <svg viewBox={`0 0 ${chartWidth} 82`} role="img" aria-label="Γραφικό προφίλ βάθους" className={`${compact ? "h-20" : "h-28"} mt-2 w-full overflow-visible`}>
         <defs>
@@ -1108,7 +1114,7 @@ function DepthProfileGraphic({ spot, compact = false }: { spot: RankedSpot; comp
           <g key={point.distanceM}>
             <line x1={point.x} x2={point.x} y1={waterTopY} y2="70" stroke="#0b5f6f" strokeOpacity="0.12" strokeDasharray="3 3" />
             <circle cx={point.x} cy={point.y} r="5.4" fill="#09202a" stroke="#ffffff" strokeWidth="2.4" />
-            {!compact && <text x={point.x} y={Math.max(10, point.y - 7)} textAnchor="middle" fontSize="10" fontWeight="700" fill="#09202a">{(point.depthM ?? 0).toFixed(1)}μ</text>}
+            {(!compact || point === minPoint || point === maxPoint) && <text x={point.x} y={point.y < 32 ? point.y + 13 : point.y - 7} textAnchor="middle" fontSize="10" fontWeight="800" fill="#09202a" stroke="#ffffff" strokeWidth="2.5" paintOrder="stroke">{(point.depthM ?? 0).toFixed(1)}μ</text>}
             <text x={point.x} y="80" textAnchor="middle" fontSize="10" fontWeight="700" fill="#0b5f6f">{point.distanceM}μ</text>
           </g>
         ))}
