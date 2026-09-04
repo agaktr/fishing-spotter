@@ -23,6 +23,7 @@ APP_DEBUG=0
 APP_SECRET=replace-with-a-long-random-secret
 DEFAULT_URI=https://fishing.apto.gr
 DATABASE_URL="mysql://user:url-encoded-password@localhost:3306/database?serverVersion=10.11.0-MariaDB&charset=utf8mb4"
+TRIP_MEDIA_DIR="%kernel.project_dir%/var/trip-media"
 ```
 
 Use the actual MariaDB version in `serverVersion`. URL-encode special characters in the database username or password.
@@ -54,7 +55,11 @@ APP_ENV=prod APP_DEBUG=0 php bin/console cache:clear
 APP_ENV=prod APP_DEBUG=0 php bin/console cache:warmup
 ```
 
-Grant the PHP-FPM/Apache user write access to `var/cache/` and `var/log/`, but not to source or configuration files.
+Create `var/trip-media/` and grant the PHP-FPM/Apache user write access to it, `var/cache/`, and `var/log/`, but not to source or configuration files. The media directory contains private user files and must remain outside `public/`.
+
+Configure PHP to accept one 10 MB image per request; for example, use `upload_max_filesize=12M` and `post_max_size=12M`. The clients upload multi-image selections one file at a time.
+
+Back up both MariaDB and `TRIP_MEDIA_DIR`. Restoring only the database will leave media metadata without files, while restoring only the folder will leave unreferenced images.
 
 Verify:
 
@@ -64,6 +69,7 @@ Verify:
 - `OPTIONS /api/spots` returns HTTP 204.
 - The server can make outbound HTTPS requests.
 - HTTPS is enabled, which is required for browser geolocation and the Android API.
+- A private and a public trip image can be uploaded and viewed with their expected visibility.
 
 ## Apache
 

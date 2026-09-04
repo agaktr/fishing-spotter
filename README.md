@@ -6,7 +6,7 @@ Production URL: `https://fishing.apto.gr`
 
 ## Requirements
 
-- PHP 8.3 or newer with `ctype`, `iconv`, `json`, `mbstring`, `pdo_mysql` and OpenSSL
+- PHP 8.3 or newer with `ctype`, `gd`, `iconv`, `json`, `mbstring`, `pdo_mysql` and OpenSSL
 - MariaDB 10.11 or newer
 - Composer 2 when dependencies are not included in the uploaded release
 - Outbound HTTPS access to Nominatim, Overpass, OpenTopoData and Open-Meteo
@@ -33,10 +33,13 @@ Local URL: `https://fishing.ddev.site`
 - `src/Controller/ApiController.php`: API-compatible JSON endpoints
 - `src/Repository/FishingRepository.php`: MariaDB users, trips, scans and places
 - `src/Service/SpotSearchService.php`: geocoding, coastal candidates, conditions, ranking and caching
+- `src/Service/TripMediaStorage.php`: validated private trip images and thumbnails
 - `assets/`: React/MapLibre browser client compiled by Webpack Encore
 - `templates/`: Symfony Twig mount pages
 - `migrations/`: idempotent baseline database migration
 - `public/`: the only web-accessible directory
+
+Trip images are stored outside `public/` under `TRIP_MEDIA_DIR` and are served through visibility-checked API routes. Back up this directory together with MariaDB.
 
 ## Identity Warning
 

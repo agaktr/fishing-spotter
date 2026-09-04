@@ -3,9 +3,9 @@
 import { FormEvent, type ReactNode, useEffect, useState, useTransition } from "react";
 import { FishingMap, type MapBaseLayer } from "./FishingMap";
 import { UserConnectPanel } from "./UserConnectPanel";
-import type { ApiUser, Coordinates, CreateTripInput, PointAnalysis, RankedSpot, SavedFishingTrip, SpotsApiRequest, SpotsApiResponse, SpotSearchMode, TechniqueId, TripFishRecord, TripVisibility } from "@/lib/types";
+import type { ApiUser, Coordinates, CreateTripInput, PointAnalysis, RankedSpot, SavedFishingTrip, SpotsApiRequest, SpotsApiResponse, SpotSearchMode, TechniqueId, TripFishRecord, TripMedia, TripVisibility } from "@/lib/types";
 import { TECHNIQUE_PROFILES } from "@/lib/techniqueProfiles";
-import { connectUsername, createTrip as createTripApi, deleteTrip as deleteTripApi, fetchTrips, setTripVisibility as setTripVisibilityApi } from "@/lib/client/api";
+import { connectUsername, createTrip as createTripApi, deleteTrip as deleteTripApi, deleteTripImage as deleteTripImageApi, fetchActiveTrip, fetchTripImage, fetchTrips, setTripVisibility as setTripVisibilityApi, updateTrip as updateTripApi, uploadTripImage } from "@/lib/client/api";
 
 const DEFAULT_RESULT_LIMIT = 24;
 const DEFAULT_RADIUS_KM = 25;
@@ -61,6 +61,8 @@ export function SearchExperience() {
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [activeUser, setActiveUser] = useState<ApiUser | undefined>();
   const [trips, setTrips] = useState<SavedFishingTrip[]>([]);
+  const [activeTrip, setActiveTrip] = useState<SavedFishingTrip | null>(null);
+  const [editingTripId, setEditingTripId] = useState<string | undefined>();
   const [tripDate, setTripDate] = useState("");
   const [tripVisibility, setTripVisibility] = useState<TripVisibility>("private");
   const [tripFishRecords, setTripFishRecords] = useState<TripFishRecord[]>([]);
@@ -71,11 +73,21 @@ export function SearchExperience() {
   const [cacheMessage, setCacheMessage] = useState<string | undefined>();
   const [gpsLoading, setGpsLoading] = useState(false);
   const [tripSaving, setTripSaving] = useState(false);
+  const [mediaSavingKey, setMediaSavingKey] = useState<string | undefined>();
   const [settingsOpen, setSettingsOpen] = useState(true);
   const [isPending, startTransition] = useTransition();
 
   const selectedSpot = response?.spots.find((spot) => spot.id === selectedSpotId) ?? response?.spots[0];
   const infoSpot = response?.spots.find((spot) => spot.id === infoSpotId);
+  const editingTrip = trips.find((trip) => trip.id === editingTripId);
+
+  function applyUpdatedTrip(trip: SavedFishingTrip) {
+    setTrips((current) => [trip, ...current.filter((item) => item.id !== trip.id)]);
+    setActiveTrip(trip.status === "active" ? trip : (current) => current?.id === trip.id ? null : current);
+    if (editingTripId === trip.id) {
+      setTripFishRecords(trip.fishRecords);
+    }
+  }
 
   async function runSearch(
     searchQuery = searchQueryFromState(technique, locationInput, targetFish, timeHint),
@@ -259,8 +271,32 @@ export function SearchExperience() {
       setInfoSpotId(undefined);
       setCustomTripPoint(pickedPoint);
     }
+    if (editingTripId) {
+      setTripDate("");
+      setTripVisibility("private");
+      setTripFishRecords([]);
+      setTripFishDraft({ ...EMPTY_TRIP_FISH_DRAFT });
+      setTripNotes("");
+    }
+    setEditingTripId(undefined);
     setSettingsOpen(false);
     setTripPanelOpen(true);
+  }
+
+  function editTrip(trip: SavedFishingTrip) {
+    if (activeUser?.id !== trip.userId) {
+      return;
+    }
+    setEditingTripId(trip.id);
+    setTripDate(toDatetimeLocal(trip.tripDate));
+    setTripVisibility(trip.visibility);
+    setTripFishRecords(trip.fishRecords);
+    setTripFishDraft({ ...EMPTY_TRIP_FISH_DRAFT });
+    setTripNotes(trip.notes);
+    setSettingsOpen(false);
+    setUserPanelOpen(false);
+    setTripPanelOpen(true);
+    setError(undefined);
   }
 
   function selectTripFishSpecies(fish: string) {
@@ -271,7 +307,7 @@ export function SearchExperience() {
     setTripFishDraft((draft) => ({ ...draft, [field]: value }));
   }
 
-  function addTripFish() {
+  async function addTripFish() {
     const species = tripFishDraft.species.trim();
     if (!species) {
       setError("Γράψε είδος ψαριού πριν πατήσεις Add fish.");
@@ -280,7 +316,7 @@ export function SearchExperience() {
 
     const count = normalizeFishCount(tripFishDraft.count);
     const record: TripFishRecord = {
-      id: `${Date.now()}-${species}`,
+      id: crypto.randomUUID(),
       species,
       count,
       weightKg: optionalPositiveNumber(tripFishDraft.weightKg),
@@ -288,21 +324,53 @@ export function SearchExperience() {
       bait: tripFishDraft.bait.trim() || undefined,
       released: tripFishDraft.released,
       notes: tripFishDraft.notes.trim() || undefined,
+      images: [],
     };
 
-    setTripFishRecords((current) => [...current, record]);
+    const records = [...tripFishRecords, record];
+    if (editingTrip && activeUser) {
+      setTripSaving(true);
+      try {
+        const updated = await updateTripApi(activeUser.username, editingTrip.id, { fishRecords: records });
+        applyUpdatedTrip(updated);
+        setTripFishDraft({ ...EMPTY_TRIP_FISH_DRAFT });
+        setError(undefined);
+      } catch (fishError) {
+        setError(fishError instanceof Error ? fishError.message : "Το ψάρι δεν αποθηκεύτηκε.");
+      } finally {
+        setTripSaving(false);
+      }
+      return;
+    }
+
+    setTripFishRecords(records);
     setTripFishDraft({ ...EMPTY_TRIP_FISH_DRAFT });
     setError(undefined);
   }
 
-  function removeTripFishRecord(id: string) {
-    setTripFishRecords((current) => current.filter((record) => record.id !== id));
+  async function removeTripFishRecord(id: string) {
+    const records = tripFishRecords.filter((record) => record.id !== id);
+    if (editingTrip && activeUser) {
+      setTripSaving(true);
+      try {
+        const updated = await updateTripApi(activeUser.username, editingTrip.id, { fishRecords: records });
+        applyUpdatedTrip(updated);
+        setError(undefined);
+      } catch (fishError) {
+        setError(fishError instanceof Error ? fishError.message : "Το ψάρι δεν αφαιρέθηκε.");
+      } finally {
+        setTripSaving(false);
+      }
+      return;
+    }
+    setTripFishRecords(records);
   }
 
   async function saveTrip() {
-    const tripSpot = customTripPoint ? undefined : selectedSpot;
-    const pointAnalysis = response?.mode === "point" ? response.pointAnalysis : undefined;
-    const tripPoint = customTripPoint ?? pointAnalysis?.requestedPoint ?? (tripSpot ? { lat: tripSpot.lat, lon: tripSpot.lon } : undefined);
+    let tripResponse = response;
+    let tripSpot = customTripPoint ? undefined : selectedSpot;
+    let pointAnalysis = response?.mode === "point" ? response.pointAnalysis : undefined;
+    let tripPoint = customTripPoint ?? pointAnalysis?.requestedPoint ?? (tripSpot ? { lat: tripSpot.lat, lon: tripSpot.lon } : undefined);
 
     if (!activeUser) {
       setError("Συνδέσου με username πριν αποθηκεύσεις εξόρμηση.");
@@ -315,48 +383,151 @@ export function SearchExperience() {
       return;
     }
 
-    if (tripFishRecords.length === 0) {
-      setError("Πάτα Add fish για τουλάχιστον ένα ψάρι πριν αποθηκεύσεις την εξόρμηση.");
-      return;
-    }
-
-    const input: CreateTripInput = {
-      tripDate: tripDate ? new Date(tripDate).toISOString() : new Date().toISOString(),
-      technique: tripSpot ? response?.intent.technique ?? technique : technique,
-      techniqueLabel: tripSpot ? response?.intent.techniqueLabel ?? TECHNIQUE_PROFILES[technique].label : TECHNIQUE_PROFILES[technique].label,
-      locationName: pointAnalysis ? response?.location.displayName ?? mapPointLocationLabel(tripPoint) : tripSpot?.name ?? mapPointLocationLabel(tripPoint),
-      lat: tripPoint.lat,
-      lon: tripPoint.lon,
-      spotId: tripSpot?.id,
-      score: tripSpot?.score ?? 0,
-      visibility: tripVisibility,
-      fishRecords: tripFishRecords.map((record) => ({ ...record })),
-      notes: tripNotes.trim(),
-      conditionsLabel: tripSpot?.conditionsLabel ?? "Χειροκίνητο σημείο χάρτη χωρίς snapshot καιρού/θάλασσας.",
-      depthLabel: tripSpot?.techniqueDepthRange.label ?? "Χειροκίνητο σημείο χωρίς snapshot βάθους.",
-      seabedLabel: tripSpot?.seabedLabel ?? "άγνωστος βυθός",
-      weather: tripSpot?.weather ?? { confidence: "none", pressureTrend: "unknown" },
-      marine: tripSpot?.marine ?? { confidence: "none" },
-    };
-
     setTripSaving(true);
     try {
+      if (customTripPoint && !tripSpot) {
+        try {
+          const analysisResult = await fetch("/api/spots", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Fishing-User": activeUser.username,
+            },
+            body: JSON.stringify({
+              mode: "point",
+              query: searchQueryFromState(technique, locationInput, targetFish, timeHint),
+              coordinates: customTripPoint,
+              locationLabel: mapPointLocationLabel(customTripPoint),
+              gpsAccuracyM,
+            } satisfies SpotsApiRequest),
+          });
+          const analysisPayload = (await analysisResult.json()) as SpotsApiResponse | { error: string };
+          if (analysisResult.ok && "spots" in analysisPayload && analysisPayload.spots[0]) {
+            tripResponse = analysisPayload;
+            tripSpot = analysisPayload.spots[0];
+            pointAnalysis = analysisPayload.mode === "point" ? analysisPayload.pointAnalysis : undefined;
+            tripPoint = pointAnalysis?.requestedPoint ?? customTripPoint;
+          }
+        } catch {
+          // Starting a trip should remain possible when live condition providers are unavailable.
+        }
+      }
+
+      const input: CreateTripInput = {
+        tripDate: tripDate ? new Date(tripDate).toISOString() : new Date().toISOString(),
+        technique: tripSpot ? tripResponse?.intent.technique ?? technique : technique,
+        techniqueLabel: tripSpot ? tripResponse?.intent.techniqueLabel ?? TECHNIQUE_PROFILES[technique].label : TECHNIQUE_PROFILES[technique].label,
+        locationName: pointAnalysis ? tripResponse?.location.displayName ?? mapPointLocationLabel(tripPoint) : tripSpot?.name ?? mapPointLocationLabel(tripPoint),
+        lat: tripPoint.lat,
+        lon: tripPoint.lon,
+        spotId: tripSpot?.id,
+        score: tripSpot?.score ?? 0,
+        visibility: tripVisibility,
+        fishRecords: tripFishRecords.map((record) => ({ ...record })),
+        notes: tripNotes.trim(),
+        conditionsLabel: tripSpot?.conditionsLabel ?? "Χειροκίνητο σημείο χάρτη χωρίς snapshot καιρού/θάλασσας.",
+        depthLabel: tripSpot?.techniqueDepthRange.label ?? "Χειροκίνητο σημείο χωρίς snapshot βάθους.",
+        seabedLabel: tripSpot?.seabedLabel ?? "άγνωστος βυθός",
+        weather: tripSpot?.weather ?? { confidence: "none", pressureTrend: "unknown" },
+        marine: tripSpot?.marine ?? { confidence: "none" },
+      };
       const trip = await createTripApi(activeUser.username, input);
-      setTrips((current) => [trip, ...current.filter((item) => item.id !== trip.id)]);
+      setEditingTripId(trip.id);
+      applyUpdatedTrip(trip);
       setError(undefined);
-      setTripFishRecords([]);
+      setTripDate(toDatetimeLocal(trip.tripDate));
+      setTripVisibility(trip.visibility);
+      setTripFishRecords(trip.fishRecords);
       setTripFishDraft({ ...EMPTY_TRIP_FISH_DRAFT });
-      setTripNotes("");
+      setTripNotes(trip.notes);
       if (customTripPoint) {
         setPickedPoint(undefined);
         setGpsAccuracyM(undefined);
         setCustomTripPoint(undefined);
       }
-      setCacheMessage(`Αποθηκεύτηκε ${trip.visibility === "public" ? "δημόσια" : "ιδιωτική"} εξόρμηση στο ${trip.locationName}.`);
+      setCacheMessage(`Ξεκίνησε ενεργή ${trip.visibility === "public" ? "δημόσια" : "ιδιωτική"} εξόρμηση στο ${trip.locationName}.`);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : "Η εξόρμηση δεν αποθηκεύτηκε.");
     } finally {
       setTripSaving(false);
+    }
+  }
+
+  async function saveTripEdits() {
+    if (!activeUser || !editingTrip) {
+      return;
+    }
+    setTripSaving(true);
+    try {
+      const updated = await updateTripApi(activeUser.username, editingTrip.id, {
+        tripDate: tripDate ? new Date(tripDate).toISOString() : editingTrip.tripDate,
+        visibility: tripVisibility,
+        notes: tripNotes.trim(),
+      });
+      applyUpdatedTrip(updated);
+      setCacheMessage("Οι αλλαγές της εξόρμησης αποθηκεύτηκαν.");
+      setError(undefined);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : "Οι αλλαγές δεν αποθηκεύτηκαν.");
+    } finally {
+      setTripSaving(false);
+    }
+  }
+
+  async function finishTrip() {
+    if (!activeUser || !editingTrip || editingTrip.status !== "active") {
+      return;
+    }
+    setTripSaving(true);
+    try {
+      const updated = await updateTripApi(activeUser.username, editingTrip.id, {
+        status: "completed",
+        tripDate: tripDate ? new Date(tripDate).toISOString() : editingTrip.tripDate,
+        visibility: tripVisibility,
+        notes: tripNotes.trim(),
+      });
+      applyUpdatedTrip(updated);
+      setCacheMessage(`Ολοκληρώθηκε η εξόρμηση στο ${updated.locationName}.`);
+      setError(undefined);
+    } catch (finishError) {
+      setError(finishError instanceof Error ? finishError.message : "Η εξόρμηση δεν ολοκληρώθηκε.");
+    } finally {
+      setTripSaving(false);
+    }
+  }
+
+  async function addTripImages(tripId: string, files: File[], fishRecordId?: string) {
+    if (!activeUser || files.length === 0) {
+      return;
+    }
+    const key = fishRecordId ?? "trip";
+    setMediaSavingKey(key);
+    try {
+      let updated: SavedFishingTrip | undefined;
+      for (const file of files) {
+        updated = await uploadTripImage(activeUser.username, tripId, file, fishRecordId);
+        applyUpdatedTrip(updated);
+      }
+      setError(undefined);
+    } catch (uploadError) {
+      setError(uploadError instanceof Error ? uploadError.message : "Η μεταφόρτωση εικόνας απέτυχε.");
+    } finally {
+      setMediaSavingKey(undefined);
+    }
+  }
+
+  async function removeTripImage(tripId: string, mediaId: string) {
+    if (!activeUser) {
+      return;
+    }
+    setMediaSavingKey(mediaId);
+    try {
+      applyUpdatedTrip(await deleteTripImageApi(activeUser.username, tripId, mediaId));
+      setError(undefined);
+    } catch (mediaError) {
+      setError(mediaError instanceof Error ? mediaError.message : "Η διαγραφή εικόνας απέτυχε.");
+    } finally {
+      setMediaSavingKey(undefined);
     }
   }
 
@@ -368,6 +539,8 @@ export function SearchExperience() {
     try {
       await deleteTripApi(activeUser.username, id);
       setTrips((current) => current.filter((trip) => trip.id !== id));
+      setActiveTrip((current) => current?.id === id ? null : current);
+      setEditingTripId((current) => current === id ? undefined : current);
     } catch (removeError) {
       setError(removeError instanceof Error ? removeError.message : "Η διαγραφή απέτυχε.");
     }
@@ -379,7 +552,10 @@ export function SearchExperience() {
     }
     try {
       const updated = await setTripVisibilityApi(activeUser.username, id, visibility);
-      setTrips((current) => current.map((trip) => trip.id === updated.id ? updated : trip));
+      applyUpdatedTrip(updated);
+      if (editingTripId === updated.id) {
+        setTripVisibility(updated.visibility);
+      }
     } catch (visibilityError) {
       setError(visibilityError instanceof Error ? visibilityError.message : "Η αλλαγή ορατότητας απέτυχε.");
     }
@@ -389,13 +565,17 @@ export function SearchExperience() {
     setActiveUser(user);
     setUserPanelOpen(false);
     window.localStorage.setItem(USER_STORAGE_KEY, user.username);
-    setTrips(await fetchTrips(user.username));
+    const [visibleTrips, currentTrip] = await Promise.all([fetchTrips(user.username), fetchActiveTrip(user.username)]);
+    setTrips(visibleTrips);
+    setActiveTrip(currentTrip);
     setError(undefined);
   }
 
   async function disconnectUser() {
     window.localStorage.removeItem(USER_STORAGE_KEY);
     setActiveUser(undefined);
+    setActiveTrip(null);
+    setEditingTripId(undefined);
     setTrips(await fetchTrips(undefined, "public"));
   }
 
@@ -427,7 +607,9 @@ export function SearchExperience() {
         if (storedUsername) {
           const user = await connectUsername(storedUsername);
           setActiveUser(user);
-          setTrips(await fetchTrips(user.username));
+          const [visibleTrips, currentTrip] = await Promise.all([fetchTrips(user.username), fetchActiveTrip(user.username)]);
+          setTrips(visibleTrips);
+          setActiveTrip(currentTrip);
         } else {
           setTrips(await fetchTrips(undefined, "public"));
         }
@@ -471,11 +653,17 @@ export function SearchExperience() {
         mode={response?.mode}
         pointAnalysis={response?.pointAnalysis}
         trips={trips}
+        onSelectTrip={(tripId) => {
+          const trip = trips.find((item) => item.id === tripId);
+          if (trip && activeUser?.id === trip.userId) {
+            editTrip(trip);
+          }
+        }}
         onPickPoint={handleMapPoint}
       />
 
       <div className="pointer-events-none absolute inset-x-0 top-0 z-20 p-3 sm:p-4">
-        <div className="pointer-events-auto mx-auto flex max-w-[1560px] flex-wrap items-start gap-2 sm:gap-3">
+        <div className="pointer-events-auto mx-auto flex max-w-[1560px] flex-wrap items-start gap-1 sm:gap-3">
           <button
             type="button"
             onClick={() => {
@@ -483,7 +671,7 @@ export function SearchExperience() {
               setUserPanelOpen(false);
               setSettingsOpen((open) => !open);
             }}
-            className="rounded-2xl border border-white/70 bg-white/95 px-4 py-3 text-sm font-black text-lagoon shadow-glow backdrop-blur transition hover:bg-white"
+            className="rounded-2xl border border-white/70 bg-white/95 px-3 py-3 text-sm font-black text-lagoon shadow-glow backdrop-blur transition hover:bg-white sm:px-4"
           >
             {settingsOpen ? "Κλείσιμο" : "Αναζήτηση"}
           </button>
@@ -494,10 +682,21 @@ export function SearchExperience() {
               setUserPanelOpen(false);
               openTripPanel();
             }}
-            className="rounded-2xl border border-white/70 bg-white/95 px-4 py-3 text-sm font-black text-lagoon shadow-glow backdrop-blur transition hover:bg-white"
+            className="rounded-2xl border border-white/70 bg-white/95 px-3 py-3 text-sm font-black text-lagoon shadow-glow backdrop-blur transition hover:bg-white sm:px-4"
           >
             Trips {trips.length > 0 ? `(${trips.length})` : ""}
           </button>
+
+          {activeTrip && activeUser && (
+            <button
+              type="button"
+              onClick={() => editTrip(activeTrip)}
+              className="rounded-2xl border border-kelp/30 bg-kelp px-3 py-3 text-sm font-black text-white shadow-glow transition hover:bg-ink sm:px-4"
+            >
+              <span className="sm:hidden">Ενεργό trip</span>
+              <span className="hidden sm:inline">Συνέχεια ενεργής εξόρμησης</span>
+            </button>
+          )}
 
           <button
             type="button"
@@ -506,7 +705,7 @@ export function SearchExperience() {
               setTripPanelOpen(false);
               setUserPanelOpen((open) => !open);
             }}
-            className={`rounded-2xl border px-4 py-3 text-sm font-black shadow-glow backdrop-blur transition ${activeUser ? "border-kelp/30 bg-kelp text-white" : "border-white/70 bg-white/95 text-lagoon hover:bg-white"}`}
+            className={`rounded-2xl border px-3 py-3 text-sm font-black shadow-glow backdrop-blur transition sm:px-4 ${activeUser ? "border-kelp/30 bg-kelp text-white" : "border-white/70 bg-white/95 text-lagoon hover:bg-white"}`}
           >
             {activeUser ? `@${activeUser.username}` : "Connect"}
           </button>
@@ -746,6 +945,10 @@ export function SearchExperience() {
           activeUser={activeUser}
           tripVisibility={tripVisibility}
           tripSaving={tripSaving}
+          mediaSavingKey={mediaSavingKey}
+          editingTrip={editingTrip}
+          activeTrip={activeTrip}
+          error={error}
           onClose={() => setTripPanelOpen(false)}
           onSelectSpot={(spotId) => {
             setCustomTripPoint(undefined);
@@ -760,8 +963,13 @@ export function SearchExperience() {
           onTripNotesChange={setTripNotes}
           onTripVisibilityChange={setTripVisibility}
           onSaveTrip={() => void saveTrip()}
+          onSaveTripEdits={() => void saveTripEdits()}
+          onFinishTrip={() => void finishTrip()}
           onRemoveTrip={(id) => void removeTrip(id)}
           onChangeTripVisibility={(id, visibility) => void changeTripVisibility(id, visibility)}
+          onEditTrip={editTrip}
+          onAddImages={(tripId, files, fishRecordId) => void addTripImages(tripId, files, fishRecordId)}
+          onRemoveImage={(tripId, mediaId) => void removeTripImage(tripId, mediaId)}
         />
       )}
     </main>
@@ -952,6 +1160,10 @@ function TripLogSheet({
   activeUser,
   tripVisibility,
   tripSaving,
+  mediaSavingKey,
+  editingTrip,
+  activeTrip,
+  error,
   onClose,
   onSelectSpot,
   onTripDateChange,
@@ -962,8 +1174,13 @@ function TripLogSheet({
   onTripNotesChange,
   onTripVisibilityChange,
   onSaveTrip,
+  onSaveTripEdits,
+  onFinishTrip,
   onRemoveTrip,
   onChangeTripVisibility,
+  onEditTrip,
+  onAddImages,
+  onRemoveImage,
 }: {
   response?: SpotsApiResponse;
   selectedSpot?: RankedSpot;
@@ -976,6 +1193,10 @@ function TripLogSheet({
   activeUser?: ApiUser;
   tripVisibility: TripVisibility;
   tripSaving: boolean;
+  mediaSavingKey?: string;
+  editingTrip?: SavedFishingTrip;
+  activeTrip: SavedFishingTrip | null;
+  error?: string;
   onClose: () => void;
   onSelectSpot: (spotId: string) => void;
   onTripDateChange: (value: string) => void;
@@ -986,22 +1207,28 @@ function TripLogSheet({
   onTripNotesChange: (value: string) => void;
   onTripVisibilityChange: (value: TripVisibility) => void;
   onSaveTrip: () => void;
+  onSaveTripEdits: () => void;
+  onFinishTrip: () => void;
   onRemoveTrip: (id: string) => void;
   onChangeTripVisibility: (id: string, visibility: TripVisibility) => void;
+  onEditTrip: (trip: SavedFishingTrip) => void;
+  onAddImages: (tripId: string, files: File[], fishRecordId?: string) => void;
+  onRemoveImage: (tripId: string, mediaId: string) => void;
 }) {
   const tripSpot = customTripPoint ? undefined : selectedSpot;
   const pointMode = response?.mode === "point";
   const tripCoordinates = pointMode && response?.pointAnalysis ? response.pointAnalysis.requestedPoint : tripSpot;
   const fishOptions = uniqueValues([...(tripSpot?.likelyFish ?? []), ...POPULAR_TARGET_FISH]).slice(0, 10);
-  const canSave = Boolean(activeUser && (tripSpot || customTripPoint) && tripFishRecords.length > 0 && !tripSaving);
+  const canSave = Boolean(activeUser && !activeTrip && (tripSpot || customTripPoint) && !tripSaving);
+  const isOwnerEditing = Boolean(editingTrip && activeUser?.id === editingTrip.userId);
 
   return (
     <section className="absolute bottom-0 left-0 right-0 z-40 max-h-[88svh] overflow-y-auto rounded-t-[1.8rem] border border-white/80 bg-white p-4 shadow-glow sm:bottom-4 sm:left-auto sm:right-4 sm:w-[31rem] sm:rounded-[1.8rem]">
       <div className="flex items-start justify-between gap-3">
         <div>
-          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-kelp">Fishing trips</p>
-          <h2 className="mt-1 text-xl font-black text-ink">Καταγραφή εξόρμησης</h2>
-          <p className="mt-1 text-sm font-semibold text-slate-500">Αποθηκεύεται στη MariaDB μέσω API μαζί με καιρό/θάλασσα.</p>
+          <p className="text-[10px] font-black uppercase tracking-[0.22em] text-kelp">{editingTrip ? `${editingTrip.status === "active" ? "Ενεργή" : "Ολοκληρωμένη"} εξόρμηση` : "Fishing trips"}</p>
+          <h2 className="mt-1 text-xl font-black text-ink">{editingTrip ? editingTrip.locationName : "Νέα εξόρμηση"}</h2>
+          <p className="mt-1 text-sm font-semibold text-slate-500">{editingTrip ? "Οι αλλαγές αποθηκεύονται απευθείας στο trip." : "Ξεκίνα τώρα και πρόσθεσε ψάρια ή εικόνες στη συνέχεια."}</p>
         </div>
         <button type="button" onClick={onClose} className="rounded-full bg-slate-100 px-3 py-1.5 text-xs font-black text-slate-600">x</button>
       </div>
@@ -1012,7 +1239,19 @@ function TripLogSheet({
             Συνδέσου με username για να αποθηκεύσεις εξόρμηση. Μπορείς ήδη να δεις τις δημόσιες εξορμήσεις άλλων χρηστών.
           </div>
         )}
-        {customTripPoint ? (
+        {!editingTrip && activeTrip && (
+          <button type="button" onClick={() => onEditTrip(activeTrip)} className="w-full rounded-2xl border border-kelp/30 bg-kelp/10 p-3 text-left text-sm font-black leading-6 text-kelp transition hover:bg-kelp hover:text-white">
+            Έχεις ενεργή εξόρμηση στο {activeTrip.locationName}. Πάτησε για να συνεχίσεις ή να την ολοκληρώσεις.
+          </button>
+        )}
+        {error && <div className="rounded-2xl border border-red-200 bg-red-50 p-3 text-sm font-semibold text-red-800">{error}</div>}
+        {editingTrip ? (
+          <div className="rounded-2xl border border-kelp/20 bg-kelp/10 p-3 text-sm font-bold leading-6 text-kelp">
+            <p className="text-[10px] font-black uppercase tracking-[0.18em]">Τοποθεσία</p>
+            <p className="mt-1 text-ink">{editingTrip.locationName}</p>
+            <p className="mt-1">{editingTrip.lat.toFixed(5)}, {editingTrip.lon.toFixed(5)}</p>
+          </div>
+        ) : customTripPoint ? (
           <div className="rounded-2xl border border-kelp/20 bg-kelp/10 p-3 text-sm font-bold leading-6 text-kelp">
             <p className="text-[10px] font-black uppercase tracking-[0.18em]">Τοποθεσία</p>
             <p className="mt-1 text-ink">Σημείο χάρτη</p>
@@ -1038,7 +1277,7 @@ function TripLogSheet({
           </div>
         )}
 
-        {tripSpot && (
+        {!editingTrip && tripSpot && (
           <div className="rounded-2xl border border-tide/20 bg-tide/10 p-3">
             <p className="text-[10px] font-black uppercase tracking-[0.18em] text-lagoon">Snapshot που θα αποθηκευτεί</p>
             <p className="mt-1 text-sm font-black text-ink">{tripSpot.name}</p>
@@ -1078,6 +1317,36 @@ function TripLogSheet({
           </div>
           <p className="mt-2 text-xs font-semibold leading-5 text-slate-500">{tripVisibility === "private" ? "Ορατή μόνο σε εσένα." : "Ορατή σε όλους τους χρήστες και επισκέπτες."}</p>
         </fieldset>
+
+        {isOwnerEditing && editingTrip && (
+          <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+            <div className="flex items-center justify-between gap-3">
+              <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Εικόνες εξόρμησης</p>
+              <span className="text-[10px] font-black text-slate-400">{editingTrip.images.length}/20</span>
+            </div>
+            <MediaGallery
+              images={editingTrip.images}
+              username={activeUser?.username}
+              editable
+              busyKey={mediaSavingKey}
+              onRemove={(mediaId) => onRemoveImage(editingTrip.id, mediaId)}
+            />
+            <label className={`mt-3 block cursor-pointer rounded-2xl border border-dashed border-tide/50 bg-white px-4 py-3 text-center text-xs font-black text-lagoon transition hover:border-lagoon ${mediaSavingKey === "trip" || editingTrip.images.length >= 20 ? "pointer-events-none opacity-50" : ""}`}>
+              {mediaSavingKey === "trip" ? "Μεταφόρτωση..." : "Πρόσθεσε εικόνες"}
+              <input
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                multiple
+                className="sr-only"
+                disabled={Boolean(mediaSavingKey) || editingTrip.images.length >= 20}
+                onChange={(event) => {
+                  onAddImages(editingTrip.id, Array.from(event.target.files ?? []));
+                  event.target.value = "";
+                }}
+              />
+            </label>
+          </div>
+        )}
 
         <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
           <p className="text-xs font-black uppercase tracking-[0.16em] text-slate-500">Add fish</p>
@@ -1128,8 +1397,8 @@ function TripLogSheet({
             </label>
           </div>
 
-          <button type="button" onClick={onAddTripFish} className="mt-3 w-full rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white transition hover:bg-ink">
-            Add fish
+          <button type="button" onClick={onAddTripFish} disabled={tripSaving} className="mt-3 w-full rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white transition hover:bg-ink disabled:opacity-50">
+            {tripSaving ? "Αποθήκευση..." : "Add fish"}
           </button>
 
           {tripFishRecords.length > 0 && (
@@ -1141,9 +1410,36 @@ function TripLogSheet({
                       <p className="text-sm font-black text-ink">{formatFishRecordSummary(record)}</p>
                       <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">{fishRecordMetrics(record)}</p>
                     </div>
-                    <button type="button" onClick={() => onRemoveTripFish(record.id)} className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-500">remove</button>
+                    <button type="button" onClick={() => onRemoveTripFish(record.id)} disabled={tripSaving} className="rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-black text-slate-500 disabled:opacity-50">remove</button>
                   </div>
-                  {record.notes && <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">{record.notes}</p>}
+                   {record.notes && <p className="mt-2 rounded-xl bg-slate-50 px-3 py-2 text-xs font-semibold text-slate-700">{record.notes}</p>}
+                  {editingTrip && (
+                    <>
+                      <MediaGallery
+                        images={record.images}
+                        username={activeUser?.username}
+                        editable={isOwnerEditing}
+                        busyKey={mediaSavingKey}
+                        onRemove={(mediaId) => onRemoveImage(editingTrip.id, mediaId)}
+                      />
+                      {isOwnerEditing && (
+                        <label className={`mt-2 block cursor-pointer rounded-xl border border-dashed border-tide/40 bg-slate-50 px-3 py-2 text-center text-[10px] font-black text-lagoon ${mediaSavingKey === record.id || record.images.length >= 5 ? "pointer-events-none opacity-50" : ""}`}>
+                          {mediaSavingKey === record.id ? "Μεταφόρτωση..." : `Εικόνες ψαριού ${record.images.length}/5`}
+                          <input
+                            type="file"
+                            accept="image/jpeg,image/png,image/webp"
+                            multiple
+                            className="sr-only"
+                            disabled={Boolean(mediaSavingKey) || record.images.length >= 5}
+                            onChange={(event) => {
+                              onAddImages(editingTrip.id, Array.from(event.target.files ?? []), record.id);
+                              event.target.value = "";
+                            }}
+                          />
+                        </label>
+                      )}
+                    </>
+                  )}
                 </article>
               ))}
             </div>
@@ -1161,14 +1457,29 @@ function TripLogSheet({
           />
         </label>
 
-        <button
-          type="button"
-          onClick={onSaveTrip}
-          disabled={!canSave}
-          className="w-full rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white transition hover:bg-ink disabled:cursor-not-allowed disabled:opacity-50"
-        >
-          {tripSaving ? "Αποθήκευση..." : "Αποθήκευση εξόρμησης"}
-        </button>
+        {editingTrip ? (
+          <div className="grid grid-cols-2 gap-2">
+            <button type="button" onClick={onSaveTripEdits} disabled={tripSaving} className="rounded-2xl bg-lagoon px-4 py-3 text-sm font-black text-white transition hover:bg-ink disabled:opacity-50">
+              {tripSaving ? "Αποθήκευση..." : "Αποθήκευση αλλαγών"}
+            </button>
+            {editingTrip.status === "active" ? (
+              <button type="button" onClick={onFinishTrip} disabled={tripSaving} className="rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white transition hover:bg-ink disabled:opacity-50">
+                Ολοκλήρωση trip
+              </button>
+            ) : (
+              <div className="grid place-items-center rounded-2xl bg-slate-100 px-4 py-3 text-center text-xs font-black text-slate-500">Ολοκληρώθηκε {editingTrip.completedAt ? formatTripDate(editingTrip.completedAt) : ""}</div>
+            )}
+          </div>
+        ) : (
+          <button
+            type="button"
+            onClick={onSaveTrip}
+            disabled={!canSave}
+            className="w-full rounded-2xl bg-kelp px-4 py-3 text-sm font-black text-white transition hover:bg-ink disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            {tripSaving ? "Έναρξη..." : "Έναρξη ενεργής εξόρμησης"}
+          </button>
+        )}
       </div>
 
       <div className="mt-5 border-t border-slate-200 pt-4">
@@ -1182,18 +1493,28 @@ function TripLogSheet({
           <div className="mt-3 space-y-2">
             {trips.map((trip) => (
               <article key={trip.id} className="rounded-2xl border border-slate-200 bg-white p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="text-[10px] font-black uppercase tracking-[0.16em] text-kelp">@{trip.username} · {formatTripDate(trip.tripDate)} · {trip.techniqueLabel}</p>
-                    <h3 className="mt-1 line-clamp-1 text-sm font-black text-ink">{trip.locationName}</h3>
+                <button type="button" onClick={() => activeUser?.id === trip.userId && onEditTrip(trip)} className={`w-full text-left ${activeUser?.id === trip.userId ? "cursor-pointer" : "cursor-default"}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-black uppercase tracking-[0.16em] text-kelp">@{trip.username} · {formatTripDate(trip.tripDate)} · {trip.techniqueLabel}</p>
+                      <h3 className="mt-1 line-clamp-1 text-sm font-black text-ink">{trip.locationName}</h3>
+                    </div>
+                    <div className="flex shrink-0 gap-1">
+                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${trip.status === "active" ? "bg-kelp text-white" : "bg-slate-100 text-slate-500"}`}>{trip.status}</span>
+                      <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${trip.visibility === "public" ? "bg-tide/15 text-lagoon" : "bg-slate-100 text-slate-500"}`}>{trip.visibility}</span>
+                    </div>
                   </div>
-                  <span className={`rounded-full px-2.5 py-1 text-[10px] font-black uppercase ${trip.visibility === "public" ? "bg-tide/15 text-lagoon" : "bg-slate-100 text-slate-500"}`}>{trip.visibility}</span>
-                </div>
+                  {activeUser?.id === trip.userId && <p className="mt-2 text-[10px] font-black uppercase tracking-[0.14em] text-lagoon">Πάτησε για επεξεργασία</p>}
+                </button>
+                <MediaGallery images={trip.images} username={activeUser?.username} />
                 <div className="mt-2 space-y-1">
                   {(trip.fishRecords.length ? trip.fishRecords : fishCaughtToRecords(trip.fishCaught)).map((record) => (
-                    <p key={record.id} className="text-xs font-bold leading-5 text-ink">
-                      {formatFishRecordSummary(record)} <span className="font-semibold text-slate-500">{fishRecordMetrics(record)}</span>
-                    </p>
+                    <div key={record.id}>
+                      <p className="text-xs font-bold leading-5 text-ink">
+                        {formatFishRecordSummary(record)} <span className="font-semibold text-slate-500">{fishRecordMetrics(record)}</span>
+                      </p>
+                      <MediaGallery images={record.images} username={activeUser?.username} />
+                    </div>
                   ))}
                 </div>
                 <p className="mt-1 line-clamp-2 text-xs font-semibold leading-5 text-slate-600">{trip.conditionsLabel}</p>
@@ -1220,6 +1541,74 @@ function TripMetric({ label, value }: { label: string; value: string }) {
       <p className="mt-1 line-clamp-3 font-bold leading-5 text-ink">{value}</p>
     </div>
   );
+}
+
+function MediaGallery({
+  images,
+  username,
+  editable = false,
+  busyKey,
+  onRemove,
+}: {
+  images: TripMedia[];
+  username?: string;
+  editable?: boolean;
+  busyKey?: string;
+  onRemove?: (mediaId: string) => void;
+}) {
+  if (images.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="mt-2 grid grid-cols-4 gap-2">
+      {images.map((image) => (
+        <div key={image.id} className="group relative aspect-square overflow-hidden rounded-xl bg-slate-100">
+          <AuthenticatedImage url={image.thumbnailUrl} username={username} alt={image.originalName} />
+          {editable && onRemove && (
+            <button
+              type="button"
+              onClick={() => onRemove(image.id)}
+              disabled={Boolean(busyKey)}
+              aria-label={`Διαγραφή ${image.originalName}`}
+              className="absolute right-1 top-1 rounded-full bg-ink/80 px-2 py-1 text-[9px] font-black text-white disabled:opacity-50"
+            >
+              {busyKey === image.id ? "..." : "x"}
+            </button>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function AuthenticatedImage({ url, username, alt }: { url: string; username?: string; alt: string }) {
+  const [objectUrl, setObjectUrl] = useState<string>();
+
+  useEffect(() => {
+    let cancelled = false;
+    let nextObjectUrl: string | undefined;
+    setObjectUrl(undefined);
+
+    void fetchTripImage(url, username).then((blob) => {
+      if (cancelled) {
+        return;
+      }
+      nextObjectUrl = URL.createObjectURL(blob);
+      setObjectUrl(nextObjectUrl);
+    }).catch(() => undefined);
+
+    return () => {
+      cancelled = true;
+      if (nextObjectUrl) {
+        URL.revokeObjectURL(nextObjectUrl);
+      }
+    };
+  }, [url, username]);
+
+  return objectUrl
+    ? <img src={objectUrl} alt={alt} className="h-full w-full object-cover" />
+    : <div className="grid h-full w-full place-items-center text-[9px] font-black uppercase text-slate-400">image</div>;
 }
 
 function MetricInput({
@@ -1482,6 +1871,7 @@ function fishCaughtToRecords(fishCaught: string[]): TripFishRecord[] {
     species: fish,
     count: 1,
     released: false,
+    images: [],
   }));
 }
 
@@ -1502,6 +1892,15 @@ function formatTripDate(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   }).format(date);
+}
+
+function toDatetimeLocal(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return "";
+  }
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
 }
 
 function depthProfileText(spot: RankedSpot): string {

@@ -1,4 +1,4 @@
-import type { ApiUser, CreateTripInput, SavedFishingTrip, TripVisibility } from "@/lib/types";
+import type { ApiUser, CreateTripInput, SavedFishingTrip, TripVisibility, UpdateTripInput } from "@/lib/types";
 
 interface ApiErrorPayload {
   error?: string;
@@ -25,12 +25,49 @@ export async function createTrip(username: string, input: CreateTripInput): Prom
   return payload.trip;
 }
 
-export async function setTripVisibility(username: string, id: string, visibility: TripVisibility): Promise<SavedFishingTrip> {
+export async function fetchActiveTrip(username: string): Promise<SavedFishingTrip | null> {
+  const payload = await apiRequest<{ trip: SavedFishingTrip | null }>("/api/trips/active", {}, username);
+  return payload.trip;
+}
+
+export async function updateTrip(username: string, id: string, input: UpdateTripInput): Promise<SavedFishingTrip> {
   const payload = await apiRequest<{ trip: SavedFishingTrip }>(`/api/trips/${encodeURIComponent(id)}`, {
     method: "PATCH",
-    body: JSON.stringify({ visibility }),
+    body: JSON.stringify(input),
   }, username);
   return payload.trip;
+}
+
+export async function setTripVisibility(username: string, id: string, visibility: TripVisibility): Promise<SavedFishingTrip> {
+  return updateTrip(username, id, { visibility });
+}
+
+export async function uploadTripImage(username: string, id: string, image: File, fishRecordId?: string): Promise<SavedFishingTrip> {
+  const body = new FormData();
+  body.append("image", image);
+  if (fishRecordId) {
+    body.append("fishRecordId", fishRecordId);
+  }
+  const payload = await apiRequest<{ trip: SavedFishingTrip }>(`/api/trips/${encodeURIComponent(id)}/media`, {
+    method: "POST",
+    body,
+  }, username);
+  return payload.trip;
+}
+
+export async function deleteTripImage(username: string, tripId: string, mediaId: string): Promise<SavedFishingTrip> {
+  const payload = await apiRequest<{ trip: SavedFishingTrip }>(`/api/trips/${encodeURIComponent(tripId)}/media/${encodeURIComponent(mediaId)}`, {
+    method: "DELETE",
+  }, username);
+  return payload.trip;
+}
+
+export async function fetchTripImage(url: string, username?: string): Promise<Blob> {
+  const response = await fetch(url, { headers: userHeaders(username) });
+  if (!response.ok) {
+    throw new Error("Η εικόνα δεν είναι διαθέσιμη.");
+  }
+  return response.blob();
 }
 
 export async function deleteTrip(username: string, id: string): Promise<void> {
@@ -64,7 +101,7 @@ export function userHeaders(username?: string): HeadersInit {
 
 async function apiRequest<T>(url: string, init: RequestInit = {}, username?: string): Promise<T> {
   const headers = new Headers(init.headers);
-  if (init.body) {
+  if (init.body && !(init.body instanceof FormData)) {
     headers.set("Content-Type", "application/json");
   }
   if (username) {

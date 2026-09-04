@@ -3,14 +3,16 @@
 namespace App\Repository;
 
 use App\Exception\ApiException;
+use App\Service\TripMediaStorage;
 use Doctrine\DBAL\Connection;
 use Doctrine\DBAL\Exception\UniqueConstraintViolationException;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\Uid\Uuid;
 
 final class FishingRepository
 {
     private const TRIP_SELECT = <<<'SQL'
-        SELECT t.id, t.user_id, u.username, u.display_name, t.visibility, t.trip_date,
+        SELECT t.id, t.user_id, u.username, u.display_name, t.visibility, t.status, t.trip_date, t.completed_at,
                t.technique, t.technique_label, t.location_name, t.latitude, t.longitude,
                t.source_spot_id, t.score, t.fish_records_json, t.notes,
                t.conditions_label, t.depth_label, t.seabed_label,
@@ -25,8 +27,10 @@ final class FishingRepository
         FROM places
         SQL;
 
-    public function __construct(private readonly Connection $db)
-    {
+    public function __construct(
+        private readonly Connection $db,
+        private readonly TripMediaStorage $mediaStorage,
+    ) {
     }
 
     public function listUsers(bool $includeInactive = true): array
@@ -125,7 +129,14 @@ final class FishingRepository
         }
         $rows = $this->db->fetchAllAssociative(self::TRIP_SELECT." {$where} ORDER BY t.trip_date DESC, t.created_at DESC LIMIT 500", $params);
 
-        return array_map($this->mapTrip(...), $rows);
+        return $this->attachMedia(array_map($this->mapTrip(...), $rows));
+    }
+
+    public function getActiveTrip(array $user): ?array
+    {
+        $row = $this->db->fetchAssociative(self::TRIP_SELECT." WHERE t.user_id = ? AND t.status = 'active' LIMIT 1", [$user['id']]);
+
+        return $row ? $this->attachMedia([$this->mapTrip($row)])[0] : null;
     }
 
     public function getTrip(string $id, ?array $user): array
@@ -136,7 +147,7 @@ final class FishingRepository
             throw new ApiException('Η εξόρμηση δεν βρέθηκε.', 404);
         }
 
-        return $trip;
+        return $this->attachMedia([$trip])[0];
     }
 
     public function createTrip(array $user, array $input): array
@@ -146,6 +157,10 @@ final class FishingRepository
         $date = new \DateTimeImmutable($input['tripDate']);
         $this->db->beginTransaction();
         try {
+            $this->db->fetchOne('SELECT id FROM users WHERE id = ? FOR UPDATE', [$user['id']]);
+            if ($this->db->fetchOne("SELECT id FROM trips WHERE user_id = ? AND status = 'active' LIMIT 1", [$user['id']])) {
+                throw new ApiException('Υπάρχει ήδη ενεργή εξόρμηση. Συνέχισέ την ή ολοκλήρωσέ την πρώτα.', 409);
+            }
             $placeId = $input['visibility'] === 'public' ? $this->upsertPlace([
                 'externalKey' => $externalKey,
                 'name' => $input['locationName'],
@@ -160,6 +175,7 @@ final class FishingRepository
                 'user_id' => $user['id'],
                 'place_id' => $placeId,
                 'visibility' => $input['visibility'],
+                'status' => 'active',
                 'trip_date' => $date->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s'),
                 'technique' => $input['technique'],
                 'technique_label' => $input['techniqueLabel'],
@@ -185,17 +201,19 @@ final class FishingRepository
         return $this->getTrip($id, $user);
     }
 
-    public function updateTripVisibility(string $id, array $user, string $visibility): array
+    public function updateTrip(string $id, array $user, array $input): array
     {
+        $removedMedia = [];
         $this->db->beginTransaction();
         try {
-            $row = $this->db->fetchAssociative('SELECT id, place_id, location_name, latitude, longitude, source_spot_id FROM trips WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE', [$id, $user['id']]);
+            $row = $this->db->fetchAssociative('SELECT id, place_id, visibility, status, location_name, latitude, longitude, source_spot_id, fish_records_json FROM trips WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE', [$id, $user['id']]);
             if (!$row) {
                 throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
             }
             $oldPlaceId = $row['place_id'] !== null ? (int) $row['place_id'] : null;
-            $placeId = null;
-            if ($visibility === 'public') {
+            $visibility = $input['visibility'] ?? $row['visibility'];
+            $placeId = $oldPlaceId;
+            if ($visibility === 'public' && $oldPlaceId === null) {
                 $externalKey = trim((string) ($row['source_spot_id'] ?? '')) ?: sprintf('custom:%.5f,%.5f', $row['latitude'], $row['longitude']);
                 $placeId = $this->upsertPlace([
                     'externalKey' => $externalKey,
@@ -206,10 +224,32 @@ final class FishingRepository
                     'dataQuality' => !empty($row['source_spot_id']) ? 'generated' : 'custom',
                     'tags' => [],
                 ]);
-            } elseif ($oldPlaceId !== null) {
+            } elseif ($visibility === 'private' && $oldPlaceId !== null) {
                 $this->db->fetchOne('SELECT id FROM places WHERE id = ? FOR UPDATE', [$oldPlaceId]);
+                $placeId = null;
             }
-            $this->db->executeStatement('UPDATE trips SET visibility = ?, place_id = ? WHERE id = ? AND user_id = ?', [$visibility, $placeId, $id, $user['id']]);
+            $changes = ['visibility' => $visibility, 'place_id' => $placeId];
+            if (array_key_exists('tripDate', $input)) {
+                $changes['trip_date'] = (new \DateTimeImmutable($input['tripDate']))->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+            }
+            if (array_key_exists('notes', $input)) {
+                $changes['notes'] = $input['notes'];
+            }
+            if (array_key_exists('fishRecords', $input)) {
+                $changes['fish_records_json'] = $this->encode($input['fishRecords']);
+                $newFishIds = array_column($input['fishRecords'], 'id');
+                foreach ($this->mediaRowsForTrip($id) as $media) {
+                    if ($media['fish_record_id'] !== null && !in_array($media['fish_record_id'], $newFishIds, true)) {
+                        $this->db->delete('trip_media', ['id' => $media['id']]);
+                        $removedMedia[] = $media;
+                    }
+                }
+            }
+            if (($input['status'] ?? null) === 'completed' && $row['status'] === 'active') {
+                $changes['status'] = 'completed';
+                $changes['completed_at'] = (new \DateTimeImmutable('now', new \DateTimeZone('UTC')))->format('Y-m-d H:i:s.v');
+            }
+            $this->db->update('trips', $changes, ['id' => $id, 'user_id' => $user['id']]);
             if ($visibility === 'private' && $oldPlaceId !== null) {
                 $this->deletePlaceIfOrphan($oldPlaceId);
             }
@@ -219,7 +259,94 @@ final class FishingRepository
             throw $error;
         }
 
+        foreach ($removedMedia as $media) {
+            $this->mediaStorage->deleteFiles($id, $media['file_name'], $media['thumbnail_name']);
+        }
+
         return $this->getTrip($id, $user);
+    }
+
+    public function addTripMedia(string $id, array $user, ?string $fishRecordId, UploadedFile $upload): array
+    {
+        $stored = null;
+        $this->db->beginTransaction();
+        try {
+            $row = $this->db->fetchAssociative('SELECT id, fish_records_json FROM trips WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE', [$id, $user['id']]);
+            if (!$row) {
+                throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
+            }
+            if ($fishRecordId !== null) {
+                $fishIds = array_column($this->decode($row['fish_records_json'], []), 'id');
+                if (!in_array($fishRecordId, $fishIds, true)) {
+                    throw new ApiException('Το ψάρι της εικόνας δεν βρέθηκε.', 404);
+                }
+            }
+            $count = (int) $this->db->fetchOne(
+                'SELECT COUNT(*) FROM trip_media WHERE trip_id = ? AND '.($fishRecordId === null ? 'fish_record_id IS NULL' : 'fish_record_id = ?'),
+                $fishRecordId === null ? [$id] : [$id, $fishRecordId],
+            );
+            $limit = $fishRecordId === null ? 20 : 5;
+            if ($count >= $limit) {
+                throw new ApiException($fishRecordId === null ? 'Η εξόρμηση μπορεί να έχει έως 20 εικόνες.' : 'Κάθε ψάρι μπορεί να έχει έως 5 εικόνες.');
+            }
+
+            $stored = $this->mediaStorage->store($id, $upload);
+            $this->db->insert('trip_media', [
+                'id' => $stored['id'],
+                'trip_id' => $id,
+                'fish_record_id' => $fishRecordId,
+                'file_name' => $stored['fileName'],
+                'thumbnail_name' => $stored['thumbnailName'],
+                'original_name' => $stored['originalName'],
+                'mime_type' => $stored['mimeType'],
+                'file_size' => $stored['fileSize'],
+                'width' => $stored['width'],
+                'height' => $stored['height'],
+                'sort_order' => $count,
+            ]);
+            $this->db->commit();
+        } catch (\Throwable $error) {
+            $this->db->rollBack();
+            if ($stored !== null) {
+                $this->mediaStorage->deleteFiles($id, $stored['fileName'], $stored['thumbnailName']);
+            }
+            throw $error;
+        }
+
+        return $this->getTrip($id, $user);
+    }
+
+    public function deleteTripMedia(string $tripId, string $mediaId, array $user): array
+    {
+        $this->db->beginTransaction();
+        try {
+            $media = $this->db->fetchAssociative('SELECT m.id, m.file_name, m.thumbnail_name FROM trip_media m JOIN trips t ON t.id = m.trip_id WHERE m.id = ? AND m.trip_id = ? AND t.user_id = ? LIMIT 1 FOR UPDATE', [$mediaId, $tripId, $user['id']]);
+            if (!$media) {
+                throw new ApiException('Η εικόνα δεν βρέθηκε ή δεν σου ανήκει.', 404);
+            }
+            $this->db->delete('trip_media', ['id' => $mediaId]);
+            $this->db->commit();
+        } catch (\Throwable $error) {
+            $this->db->rollBack();
+            throw $error;
+        }
+        $this->mediaStorage->deleteFiles($tripId, $media['file_name'], $media['thumbnail_name']);
+
+        return $this->getTrip($tripId, $user);
+    }
+
+    public function getTripMediaFile(string $mediaId, ?array $user, bool $thumbnail): array
+    {
+        $row = $this->db->fetchAssociative('SELECT m.trip_id, m.file_name, m.thumbnail_name, m.mime_type, t.visibility, t.user_id FROM trip_media m JOIN trips t ON t.id = m.trip_id WHERE m.id = ? LIMIT 1', [$mediaId]);
+        if (!$row || ($row['visibility'] === 'private' && $row['user_id'] !== ($user['id'] ?? null))) {
+            throw new ApiException('Η εικόνα δεν βρέθηκε.', 404);
+        }
+
+        return [
+            'path' => $this->mediaStorage->path($row['trip_id'], $thumbnail ? $row['thumbnail_name'] : $row['file_name']),
+            'mimeType' => $row['mime_type'],
+            'public' => $row['visibility'] === 'public',
+        ];
     }
 
     public function deleteTrip(string $id, array $user): void
@@ -243,6 +370,7 @@ final class FishingRepository
             $this->db->rollBack();
             throw $error;
         }
+        $this->mediaStorage->deleteTrip($id);
     }
 
     public function listPlaces(int $limit): array
@@ -374,16 +502,64 @@ final class FishingRepository
 
         return [
             'id' => $row['id'], 'userId' => $row['user_id'], 'username' => $row['username'], 'displayName' => $row['display_name'],
-            'visibility' => $row['visibility'], 'tripDate' => $this->iso($row['trip_date']), 'technique' => $row['technique'],
+            'visibility' => $row['visibility'], 'status' => $row['status'], 'tripDate' => $this->iso($row['trip_date']),
+            'completedAt' => $row['completed_at'] !== null ? $this->iso($row['completed_at']) : null, 'technique' => $row['technique'],
             'techniqueLabel' => $row['technique_label'], 'locationName' => $row['location_name'], 'lat' => (float) $row['latitude'],
             'lon' => (float) $row['longitude'], 'spotId' => $row['source_spot_id'] ?: $row['id'], 'score' => (int) $row['score'],
             'fishCaught' => array_map(static fn (array $record): string => $record['count'].'x '.$record['species'], $fish),
-            'fishRecords' => $fish, 'notes' => $row['notes'], 'conditionsLabel' => $row['conditions_label'],
+            'fishRecords' => array_map(static fn (array $record): array => [...$record, 'images' => []], $fish), 'images' => [],
+            'notes' => $row['notes'], 'conditionsLabel' => $row['conditions_label'],
             'depthLabel' => $row['depth_label'], 'seabedLabel' => $row['seabed_label'],
             'weather' => $this->decode($row['weather_json'], ['confidence' => 'none', 'pressureTrend' => 'unknown']),
             'marine' => $this->decode($row['marine_json'], ['confidence' => 'none']),
             'createdAt' => $this->iso($row['created_at']), 'updatedAt' => $this->iso($row['updated_at']),
         ];
+    }
+
+    private function attachMedia(array $trips): array
+    {
+        if ($trips === []) {
+            return [];
+        }
+        $ids = array_column($trips, 'id');
+        $placeholders = implode(', ', array_fill(0, count($ids), '?'));
+        $rows = $this->db->fetchAllAssociative("SELECT id, trip_id, fish_record_id, original_name, mime_type, file_size, width, height, sort_order, created_at FROM trip_media WHERE trip_id IN ({$placeholders}) ORDER BY sort_order, created_at", $ids);
+        $mediaByTrip = [];
+        foreach ($rows as $row) {
+            $mediaByTrip[$row['trip_id']][] = $this->mapMedia($row);
+        }
+        foreach ($trips as &$trip) {
+            $media = $mediaByTrip[$trip['id']] ?? [];
+            $trip['images'] = array_values(array_filter($media, static fn (array $image): bool => $image['fishRecordId'] === null));
+            foreach ($trip['fishRecords'] as &$fish) {
+                $fish['images'] = array_values(array_filter($media, static fn (array $image): bool => $image['fishRecordId'] === $fish['id']));
+            }
+            unset($fish);
+        }
+        unset($trip);
+
+        return $trips;
+    }
+
+    private function mapMedia(array $row): array
+    {
+        return [
+            'id' => $row['id'],
+            'fishRecordId' => $row['fish_record_id'],
+            'originalName' => $row['original_name'],
+            'mimeType' => $row['mime_type'],
+            'fileSize' => (int) $row['file_size'],
+            'width' => (int) $row['width'],
+            'height' => (int) $row['height'],
+            'url' => '/api/trip-media/'.$row['id'],
+            'thumbnailUrl' => '/api/trip-media/'.$row['id'].'/thumbnail',
+            'createdAt' => $this->iso($row['created_at']),
+        ];
+    }
+
+    private function mediaRowsForTrip(string $tripId): array
+    {
+        return $this->db->fetchAllAssociative('SELECT id, fish_record_id, file_name, thumbnail_name FROM trip_media WHERE trip_id = ?', [$tripId]);
     }
 
     private function mapPlace(array $row): array

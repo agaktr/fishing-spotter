@@ -20,6 +20,7 @@ interface FishingMapProps {
   mode?: SpotSearchMode;
   pointAnalysis?: PointAnalysis;
   onSelectSpot: (spotId: string) => void;
+  onSelectTrip?: (tripId: string) => void;
   onPickPoint: (coordinates: Coordinates) => void;
 }
 
@@ -40,11 +41,12 @@ const EMPTY_COLLECTION: MapFeatureCollection = {
   features: [],
 };
 
-export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, pickedPoint, mode, pointAnalysis, onSelectSpot, onPickPoint }: FishingMapProps) {
+export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const centerMarkerRef = useRef<maplibregl.Marker | null>(null);
   const onSelectSpotRef = useRef(onSelectSpot);
+  const onSelectTripRef = useRef(onSelectTrip);
   const onPickPointRef = useRef(onPickPoint);
   const lastFitKeyRef = useRef<string | undefined>(undefined);
   const lastTripFitKeyRef = useRef<string | undefined>(undefined);
@@ -52,6 +54,10 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
   useEffect(() => {
     onSelectSpotRef.current = onSelectSpot;
   }, [onSelectSpot]);
+
+  useEffect(() => {
+    onSelectTripRef.current = onSelectTrip;
+  }, [onSelectTrip]);
 
   useEffect(() => {
     onPickPointRef.current = onPickPoint;
@@ -456,6 +462,14 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
 
       map.on("click", "spots-circle", selectSpot);
       map.on("click", "spots-rank", selectSpot);
+      const selectTrip = (event: maplibregl.MapLayerMouseEvent) => {
+        const id = event.features?.[0]?.properties?.id;
+        if (typeof id === "string") {
+          onSelectTripRef.current?.(id);
+        }
+      };
+      map.on("click", "trips-circle", selectTrip);
+      map.on("click", "trips-label", selectTrip);
 
       map.on("click", (event) => {
         const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "point-analysis-points", "point-analysis-labels", "trips-circle", "trips-label"] });

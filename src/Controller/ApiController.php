@@ -6,6 +6,8 @@ use App\Exception\ApiException;
 use App\Repository\FishingRepository;
 use App\Service\SpotSearchService;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\File\UploadedFile;
 use Symfony\Component\HttpFoundation\JsonResponse;
 use Symfony\Component\HttpFoundation\Request;
 use Symfony\Component\HttpFoundation\Response;
@@ -29,7 +31,8 @@ final class ApiController extends AbstractController
             'endpoints' => [
                 'session' => 'POST /api/session',
                 'users' => 'GET,POST /api/users; PATCH /api/users/:id',
-                'trips' => 'GET,POST /api/trips; GET,PATCH,DELETE /api/trips/:id',
+                'trips' => 'GET,POST /api/trips; GET,PATCH,DELETE /api/trips/:id; GET /api/trips/active',
+                'tripMedia' => 'POST,DELETE /api/trips/:id/media; GET /api/trip-media/:id',
                 'scans' => 'GET /api/scans; GET /api/scans/:id',
                 'places' => 'GET /api/places; GET /api/places/:id',
                 'spots' => 'POST /api/spots',
@@ -100,6 +103,14 @@ final class ApiController extends AbstractController
         return $this->json(['trip' => $trip], 201);
     }
 
+    #[Route('/api/trips/active', name: 'api_trips_active', methods: ['GET'], priority: 10)]
+    public function activeTrip(Request $request): JsonResponse
+    {
+        $user = $this->repository->requestUser($request->headers->get('X-Fishing-User'));
+
+        return $this->json(['trip' => $this->repository->getActiveTrip($user)]);
+    }
+
     #[Route('/api/trips/{id}', name: 'api_trips_get', methods: ['GET'])]
     public function trip(string $id, Request $request): JsonResponse
     {
@@ -112,12 +123,44 @@ final class ApiController extends AbstractController
     public function updateTrip(string $id, Request $request): JsonResponse
     {
         $user = $this->repository->requestUser($request->headers->get('X-Fishing-User'));
-        $visibility = $this->body($request)['visibility'] ?? null;
-        if (!in_array($visibility, ['private', 'public'], true)) {
-            throw new ApiException('Διάλεξε δημόσια ή ιδιωτική εξόρμηση.');
-        }
 
-        return $this->json(['trip' => $this->repository->updateTripVisibility($id, $user, $visibility)]);
+        return $this->json(['trip' => $this->repository->updateTrip($id, $user, $this->tripUpdateInput($this->body($request)))]);
+    }
+
+    #[Route('/api/trips/{id}/media', name: 'api_trip_media_add', methods: ['POST'])]
+    public function addTripMedia(string $id, Request $request): JsonResponse
+    {
+        $user = $this->repository->requestUser($request->headers->get('X-Fishing-User'));
+        $upload = $request->files->get('image');
+        if (!$upload instanceof UploadedFile) {
+            throw new ApiException('Διάλεξε εικόνα για μεταφόρτωση.');
+        }
+        $fishRecordId = trim($request->request->getString('fishRecordId')) ?: null;
+
+        return $this->json(['trip' => $this->repository->addTripMedia($id, $user, $fishRecordId, $upload)], 201);
+    }
+
+    #[Route('/api/trips/{tripId}/media/{mediaId}', name: 'api_trip_media_delete', methods: ['DELETE'])]
+    public function deleteTripMedia(string $tripId, string $mediaId, Request $request): JsonResponse
+    {
+        $user = $this->repository->requestUser($request->headers->get('X-Fishing-User'));
+
+        return $this->json(['trip' => $this->repository->deleteTripMedia($tripId, $mediaId, $user)]);
+    }
+
+    #[Route('/api/trip-media/{id}', name: 'api_trip_media_file', methods: ['GET'])]
+    #[Route('/api/trip-media/{id}/thumbnail', name: 'api_trip_media_thumbnail', methods: ['GET'])]
+    public function tripMedia(string $id, Request $request): BinaryFileResponse
+    {
+        $user = $this->repository->requestUser($request->headers->get('X-Fishing-User'), false);
+        $media = $this->repository->getTripMediaFile($id, $user, str_ends_with($request->getPathInfo(), '/thumbnail'));
+        $response = new BinaryFileResponse($media['path']);
+        $response->headers->set('Content-Type', $media['mimeType']);
+        $response->headers->set('Content-Disposition', 'inline');
+        $response->headers->set('Cache-Control', $media['public'] ? 'public, max-age=86400' : 'private, no-store');
+        $response->headers->set('Vary', 'X-Fishing-User');
+
+        return $response;
     }
 
     #[Route('/api/trips/{id}', name: 'api_trips_delete', methods: ['DELETE'])]
@@ -208,10 +251,7 @@ final class ApiController extends AbstractController
         if (!in_array($visibility, ['private', 'public'], true)) {
             throw new ApiException('Διάλεξε δημόσια ή ιδιωτική εξόρμηση.');
         }
-        $fishRecords = $body['fishRecords'] ?? null;
-        if (!is_array($fishRecords) || $fishRecords === [] || array_filter($fishRecords, fn (mixed $record): bool => !$this->validFish($record))) {
-            throw new ApiException('Χρειάζεται τουλάχιστον ένα έγκυρο ψάρι.');
-        }
+        $fishRecords = $this->fishRecords($body['fishRecords'] ?? []);
         try {
             new \DateTimeImmutable($this->requiredString($body['tripDate'] ?? null, 'Ημερομηνία', 40));
         } catch (\Throwable) {
@@ -238,9 +278,85 @@ final class ApiController extends AbstractController
         ];
     }
 
-    private function validFish(mixed $record): bool
+    private function tripUpdateInput(array $body): array
     {
-        return is_array($record) && is_string($record['id'] ?? null) && is_string($record['species'] ?? null) && trim($record['species']) !== '' && is_numeric($record['count'] ?? null) && (float) $record['count'] > 0 && is_bool($record['released'] ?? null);
+        $input = [];
+        if (array_key_exists('visibility', $body)) {
+            if (!in_array($body['visibility'], ['private', 'public'], true)) {
+                throw new ApiException('Διάλεξε δημόσια ή ιδιωτική εξόρμηση.');
+            }
+            $input['visibility'] = $body['visibility'];
+        }
+        if (array_key_exists('tripDate', $body)) {
+            try {
+                new \DateTimeImmutable($this->requiredString($body['tripDate'], 'Ημερομηνία', 40));
+            } catch (\Throwable) {
+                throw new ApiException('Η ημερομηνία εξόρμησης δεν είναι έγκυρη.');
+            }
+            $input['tripDate'] = $body['tripDate'];
+        }
+        if (array_key_exists('notes', $body)) {
+            $input['notes'] = is_string($body['notes']) ? mb_substr(trim($body['notes']), 0, 20000) : throw new ApiException('Οι σημειώσεις δεν είναι έγκυρες.');
+        }
+        if (array_key_exists('fishRecords', $body)) {
+            $input['fishRecords'] = $this->fishRecords($body['fishRecords']);
+        }
+        if (array_key_exists('status', $body)) {
+            if ($body['status'] !== 'completed') {
+                throw new ApiException('Η κατάσταση εξόρμησης δεν είναι έγκυρη.');
+            }
+            $input['status'] = 'completed';
+        }
+        if ($input === []) {
+            throw new ApiException('Δεν δόθηκε αλλαγή εξόρμησης.');
+        }
+
+        return $input;
+    }
+
+    private function fishRecords(mixed $records): array
+    {
+        if (!is_array($records)) {
+            throw new ApiException('Τα ψάρια της εξόρμησης δεν είναι έγκυρα.');
+        }
+        $normalized = [];
+        $ids = [];
+        foreach ($records as $record) {
+            if (!is_array($record)) {
+                throw new ApiException('Τα ψάρια της εξόρμησης δεν είναι έγκυρα.');
+            }
+            $id = $this->requiredString($record['id'] ?? null, 'ID ψαριού', 160);
+            if (isset($ids[$id])) {
+                throw new ApiException('Κάθε ψάρι πρέπει να έχει μοναδικό ID.');
+            }
+            $ids[$id] = true;
+            $count = $record['count'] ?? null;
+            if (!is_numeric($count) || (int) $count != (float) $count || ($count = (int) $count) < 1 || $count > 999) {
+                throw new ApiException('Το πλήθος ψαριών δεν είναι έγκυρο.');
+            }
+            if (!is_bool($record['released'] ?? null)) {
+                throw new ApiException('Η ένδειξη απελευθέρωσης δεν είναι έγκυρη.');
+            }
+            $fish = [
+                'id' => $id,
+                'species' => $this->requiredString($record['species'] ?? null, 'Είδος ψαριού', 100),
+                'count' => $count,
+                'released' => $record['released'],
+            ];
+            foreach (['weightKg' => 1000, 'lengthCm' => 1000] as $field => $max) {
+                if (isset($record[$field])) {
+                    $fish[$field] = $this->number($record[$field], 0.001, $max, $field);
+                }
+            }
+            foreach (['bait' => 255, 'notes' => 2000] as $field => $max) {
+                if (isset($record[$field]) && is_string($record[$field]) && trim($record[$field]) !== '') {
+                    $fish[$field] = mb_substr(trim($record[$field]), 0, $max);
+                }
+            }
+            $normalized[] = $fish;
+        }
+
+        return $normalized;
     }
 
     private function requiredString(mixed $value, string $label, int $max): string

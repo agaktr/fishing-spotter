@@ -243,9 +243,24 @@ export interface TripFishRecord {
   bait?: string;
   released: boolean;
   notes?: string;
+  images: TripMedia[];
 }
 
 export type TripVisibility = "private" | "public";
+export type TripStatus = "active" | "completed";
+
+export interface TripMedia {
+  id: string;
+  fishRecordId: string | null;
+  originalName: string;
+  mimeType: string;
+  fileSize: number;
+  width: number;
+  height: number;
+  url: string;
+  thumbnailUrl: string;
+  createdAt: string;
+}
 
 export interface SavedFishingTrip {
   id: string;
@@ -253,9 +268,11 @@ export interface SavedFishingTrip {
   username: string;
   displayName: string;
   visibility: TripVisibility;
+  status: TripStatus;
   createdAt: string;
   updatedAt: string;
   tripDate: string;
+  completedAt: string | null;
   technique: TechniqueId;
   techniqueLabel: string;
   locationName: string;
@@ -265,6 +282,7 @@ export interface SavedFishingTrip {
   score: number;
   fishCaught: string[];
   fishRecords: TripFishRecord[];
+  images: TripMedia[];
   notes: string;
   conditionsLabel: string;
   depthLabel: string;
@@ -290,6 +308,14 @@ export interface CreateTripInput {
   seabedLabel?: string;
   weather?: WeatherSnapshot;
   marine?: MarineSnapshot;
+}
+
+export interface UpdateTripInput {
+  visibility?: TripVisibility;
+  tripDate?: string;
+  notes?: string;
+  fishRecords?: TripFishRecord[];
+  status?: "completed";
 }
 
 export interface StoredPlace {

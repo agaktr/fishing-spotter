@@ -10,6 +10,7 @@ parameters:
     app.nominatim_endpoint: '%env(NOMINATIM_ENDPOINT)%'
     app.overpass_endpoint: '%env(OVERPASS_ENDPOINT)%'
     app.open_topo_dataset: '%env(OPEN_TOPO_DATASET)%'
+    app.trip_media_dir: '%env(resolve:TRIP_MEDIA_DIR)%'
 
 services:
     # default configuration for services in *this* file
@@ -29,6 +30,10 @@ services:
             $nominatimEndpoint: '%app.nominatim_endpoint%'
             $overpassEndpoint: '%app.overpass_endpoint%'
             $openTopoDataset: '%app.open_topo_dataset%'
+
+    App\Service\TripMediaStorage:
+        arguments:
+            $tripMediaDir: '%app.trip_media_dir%'
 
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones
