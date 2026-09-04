@@ -55,3 +55,7 @@ input {
 .maplibregl-ctrl-attrib {
   font-size: 10px;
 }
+
+.depth-scale-gradient {
+  background: linear-gradient(90deg, #ef4444 0%, #f97316 16.67%, #facc15 33.33%, #84cc16 50%, #10b981 66.67%, #06b6d4 83.33%, #2563eb 99%, #172554 100%);
+}

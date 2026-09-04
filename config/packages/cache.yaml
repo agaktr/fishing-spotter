@@ -20,3 +20,5 @@ framework:
                 adapter: cache.app
             cache.upstream:
                 adapter: cache.app
+            cache.depth_tiles:
+                adapter: cache.app

@@ -16,6 +16,7 @@ interface FishingMapProps {
   selectedSpotId?: string;
   loading: boolean;
   baseLayer: MapBaseLayer;
+  depthVisible: boolean;
   pickedPoint?: Coordinates;
   mode?: SpotSearchMode;
   pointAnalysis?: PointAnalysis;
@@ -41,7 +42,7 @@ const EMPTY_COLLECTION: MapFeatureCollection = {
   features: [],
 };
 
-export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
+export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, depthVisible, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const centerMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -91,11 +92,12 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
             tileSize: 256,
             attribution: "Map data © OpenStreetMap contributors, SRTM | OpenTopoMap CC-BY-SA",
           },
-          openseamapDepth: {
+          emodnetDepth: {
             type: "raster",
-            tiles: ["https://tiles.openseamap.org/depth/{z}/{x}/{y}.png"],
+            tiles: ["/api/depth-tiles/{z}/{x}/{y}.png"],
             tileSize: 256,
-            attribution: "Depth overlay © OpenSeaMap contributors",
+            maxzoom: 15,
+            attribution: "EMODnet Bathymetry 2024 · CC BY 4.0 · Not for navigation",
           },
           openseamap: {
             type: "raster",
@@ -109,10 +111,11 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
           { id: "satellite", type: "raster", source: "satellite", layout: { visibility: "none" } },
           { id: "terrain", type: "raster", source: "terrain", layout: { visibility: "none" } },
           {
-            id: "openseamapDepth",
+            id: "emodnetDepth",
             type: "raster",
-            source: "openseamapDepth",
-            paint: { "raster-opacity": 0.7 },
+            source: "emodnetDepth",
+            layout: { visibility: "none" },
+            paint: { "raster-opacity": 0.58 },
           },
           {
             id: "openseamap",
@@ -531,6 +534,28 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       };
     }
   }, [baseLayer]);
+
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) {
+      return;
+    }
+
+    const update = () => {
+      if (map.getLayer("emodnetDepth")) {
+        map.setLayoutProperty("emodnetDepth", "visibility", depthVisible ? "visible" : "none");
+      }
+    };
+
+    if (map.getLayer("emodnetDepth")) {
+      update();
+    } else {
+      map.once("load", update);
+      return () => {
+        map.off("load", update);
+      };
+    }
+  }, [depthVisible]);
 
   useEffect(() => {
     const map = mapRef.current;

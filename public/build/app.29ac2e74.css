@@ -551,6 +551,9 @@ video {
 .pointer-events-auto{
   pointer-events: auto;
 }
+.\!visible{
+  visibility: visible !important;
+}
 .visible{
   visibility: visible;
 }
@@ -682,6 +685,9 @@ video {
 .aspect-square{
   aspect-ratio: 1 / 1;
 }
+.h-2{
+  height: 0.5rem;
+}
 .h-20{
   height: 5rem;
 }
@@ -727,6 +733,9 @@ video {
 }
 .min-h-screen{
   min-height: 100vh;
+}
+.w-28{
+  width: 7rem;
 }
 .w-4{
   width: 1rem;
@@ -1114,6 +1123,9 @@ video {
 .pb-1{
   padding-bottom: 0.25rem;
 }
+.pt-2{
+  padding-top: 0.5rem;
+}
 .pt-3{
   padding-top: 0.75rem;
 }
@@ -1135,6 +1147,9 @@ video {
 }
 .text-\[11px\]{
   font-size: 11px;
+}
+.text-\[8px\]{
+  font-size: 8px;
 }
 .text-\[9px\]{
   font-size: 9px;
@@ -1166,6 +1181,9 @@ video {
 }
 .uppercase{
   text-transform: uppercase;
+}
+.leading-3{
+  line-height: .75rem;
 }
 .leading-4{
   line-height: 1rem;
@@ -1351,6 +1369,10 @@ input {
 
 .maplibregl-ctrl-attrib {
   font-size: 10px;
+}
+
+.depth-scale-gradient {
+  background: linear-gradient(90deg, #ef4444 0%, #f97316 16.67%, #facc15 33.33%, #84cc16 50%, #10b981 66.67%, #06b6d4 83.33%, #2563eb 99%, #172554 100%);
 }
 
 .hover\:border-kelp\/40:hover{

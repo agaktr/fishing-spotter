@@ -51,7 +51,8 @@ export function SearchExperience() {
   const [radiusKm, setRadiusKm] = useState(DEFAULT_RADIUS_KM);
   const [targetFish, setTargetFish] = useState("");
   const [timeHint, setTimeHint] = useState("");
-  const [baseLayer, setBaseLayer] = useState<MapBaseLayer>("terrain");
+  const [baseLayer, setBaseLayer] = useState<MapBaseLayer>("satellite");
+  const [depthVisible, setDepthVisible] = useState(false);
   const [selectedSpotId, setSelectedSpotId] = useState<string | undefined>();
   const [infoSpotId, setInfoSpotId] = useState<string | undefined>();
   const [pickedPoint, setPickedPoint] = useState<Coordinates | undefined>();
@@ -649,6 +650,7 @@ export function SearchExperience() {
         }}
         loading={isPending || gpsLoading}
         baseLayer={baseLayer}
+        depthVisible={depthVisible}
         pickedPoint={pickedPoint}
         mode={response?.mode}
         pointAnalysis={response?.pointAnalysis}
@@ -875,6 +877,23 @@ export function SearchExperience() {
               {baseLayerLabel(layer)}
             </button>
           ))}
+          <div className="grid gap-2 border-t border-slate-200 pt-2">
+            <button
+              type="button"
+              aria-pressed={depthVisible}
+              onClick={() => setDepthVisible((visible) => !visible)}
+              className={`rounded-xl px-3 py-2 text-xs font-black transition ${depthVisible ? "bg-lagoon text-white" : "bg-white text-lagoon hover:bg-slate-50"}`}
+            >
+              Depth
+            </button>
+            {depthVisible && (
+              <div className="w-28 rounded-xl bg-slate-50 p-2 text-[8px] font-black text-slate-600">
+                <div className="depth-scale-gradient h-2 rounded-full" />
+                <div className="mt-1 flex justify-between"><span>0μ</span><span>50μ</span><span>100μ</span><span>150μ</span></div>
+                <p className="mt-1 text-center leading-3">&gt;150μ: βαθύ<br />EMODnet 2024 · Όχι για πλοήγηση</p>
+              </div>
+            )}
+          </div>
         </div>
       )}
 
