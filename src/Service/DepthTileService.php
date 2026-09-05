@@ -25,12 +25,11 @@ final class DepthTileService
     /** @var list<array{depth: float, color: array{int, int, int}}> */
     private const FISHING_SCALE = [
         ['depth' => 0.0, 'color' => [239, 68, 68]],
-        ['depth' => 25.0, 'color' => [249, 115, 22]],
-        ['depth' => 50.0, 'color' => [250, 204, 21]],
-        ['depth' => 75.0, 'color' => [132, 204, 22]],
-        ['depth' => 100.0, 'color' => [16, 185, 129]],
-        ['depth' => 125.0, 'color' => [6, 182, 212]],
-        ['depth' => 150.0, 'color' => [37, 99, 235]],
+        ['depth' => 5.0, 'color' => [249, 115, 22]],
+        ['depth' => 10.0, 'color' => [250, 204, 21]],
+        ['depth' => 15.0, 'color' => [132, 204, 22]],
+        ['depth' => 20.0, 'color' => [6, 182, 212]],
+        ['depth' => 25.0, 'color' => [37, 99, 235]],
     ];
 
     public function __construct(
@@ -46,7 +45,7 @@ final class DepthTileService
             throw new \InvalidArgumentException('Invalid depth tile coordinates.');
         }
 
-        $cacheItem = $this->cache->getItem(sprintf('depth_tile_v2_%d_%d_%d', $zoom, $x, $y));
+        $cacheItem = $this->cache->getItem(sprintf('depth_tile_v3_%d_%d_%d', $zoom, $x, $y));
         if ($cacheItem->isHit() && is_string($cacheItem->get())) {
             return $cacheItem->get();
         }
@@ -154,7 +153,7 @@ final class DepthTileService
     /** @return array{int, int, int} */
     private function fishingColor(float $depth): array
     {
-        if ($depth > 150.0) {
+        if ($depth > 25.0) {
             return [23, 37, 84];
         }
 

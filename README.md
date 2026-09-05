@@ -9,7 +9,7 @@ Production URL: `https://fishing.apto.gr`
 - PHP 8.3 or newer with `ctype`, `gd`, `iconv`, `json`, `mbstring`, `pdo_mysql` and OpenSSL
 - MariaDB 10.11 or newer
 - Composer 2 when dependencies are not included in the uploaded release
-- Outbound HTTPS access to Nominatim, Overpass, OpenTopoData and Open-Meteo
+- Outbound HTTPS access to Nominatim, Overpass, EMODnet Bathymetry and Open-Meteo
 - A domain document root pointed at `public/`
 
 Node.js is only required when rebuilding browser assets. Compiled `public/build/` assets are committed so production runs entirely through PHP after `git pull` and `composer install`.

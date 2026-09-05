@@ -1371,8 +1371,16 @@ input {
   font-size: 10px;
 }
 
+.maplibregl-ctrl-scale {
+  border-color: #09202a;
+  border-top: 0;
+  background: rgba(255, 255, 255, 0.9);
+  color: #09202a;
+  font-weight: 700;
+}
+
 .depth-scale-gradient {
-  background: linear-gradient(90deg, #ef4444 0%, #f97316 16.67%, #facc15 33.33%, #84cc16 50%, #10b981 66.67%, #06b6d4 83.33%, #2563eb 99%, #172554 100%);
+  background: linear-gradient(90deg, #ef4444 0%, #f97316 20%, #facc15 40%, #84cc16 60%, #06b6d4 80%, #2563eb 99%, #172554 100%);
 }
 
 .hover\:border-kelp\/40:hover{

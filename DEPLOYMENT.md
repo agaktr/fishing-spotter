@@ -24,6 +24,8 @@ APP_SECRET=replace-with-a-long-random-secret
 DEFAULT_URI=https://fishing.apto.gr
 DATABASE_URL="mysql://user:url-encoded-password@localhost:3306/database?serverVersion=10.11.0-MariaDB&charset=utf8mb4"
 TRIP_MEDIA_DIR="%kernel.project_dir%/var/trip-media"
+EMODNET_DEPTH_ENDPOINT="https://ows.emodnet-bathymetry.eu/wcs"
+EMODNET_DEPTH_RELEASE="2024"
 ```
 
 Use the actual MariaDB version in `serverVersion`. URL-encode special characters in the database username or password.
@@ -68,6 +70,7 @@ Verify:
 - `/api` returns the API manifest.
 - `OPTIONS /api/spots` returns HTTP 204.
 - The server can make outbound HTTPS requests.
+- The server can retrieve numerical WCS coverage from EMODnet Bathymetry.
 - HTTPS is enabled, which is required for browser geolocation and the Android API.
 - A private and a public trip image can be uploaded and viewed with their expected visibility.
 

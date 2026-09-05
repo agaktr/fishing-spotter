@@ -889,8 +889,8 @@ export function SearchExperience() {
             {depthVisible && (
               <div className="w-28 rounded-xl bg-slate-50 p-2 text-[8px] font-black text-slate-600">
                 <div className="depth-scale-gradient h-2 rounded-full" />
-                <div className="mt-1 flex justify-between"><span>0μ</span><span>50μ</span><span>100μ</span><span>150μ</span></div>
-                <p className="mt-1 text-center leading-3">&gt;150μ: βαθύ<br />EMODnet 2024 · Όχι για πλοήγηση</p>
+                <div className="mt-1 flex justify-between"><span>0μ</span><span>5μ</span><span>10μ</span><span>15μ</span><span>20μ</span><span>25μ</span></div>
+                <p className="mt-1 text-center leading-3">&gt;25μ: βαθύ<br />EMODnet 2024 · Όχι για πλοήγηση</p>
               </div>
             )}
           </div>
@@ -1023,10 +1023,10 @@ function PointAnalysisSheet({
           <h2 className="mt-1 text-xl font-black text-ink">{spot.name}</h2>
           <p className={`mt-2 rounded-2xl px-3 py-2 text-sm font-black leading-5 ${!hasWater ? "border border-red-200 bg-red-50 text-red-800" : analysis.adjustedToWater ? "border border-amber-200 bg-amber-50 text-amber-900" : "border border-tide/25 bg-tide/10 text-lagoon"}`}>
             {!hasWater
-              ? "Δεν εντοπίστηκε μετρημένο νερό έως 1,2χλμ από το επιλεγμένο σημείο."
+              ? "Δεν εντοπίστηκε κελί νερού έως 1,2χλμ από το επιλεγμένο σημείο."
               : analysis.adjustedToWater
-              ? `Κοντινότερο δειγματοληπτικό σημείο νερού στα ${formatMetric(analysis.waterDistanceM, "μ", 0)}${typeof analysis.waterBearingDeg === "number" ? ` προς ${formatBearing(analysis.waterBearingDeg)}` : ""}.`
-              : "Το επιλεγμένο στίγμα αναλύθηκε ακριβώς στο νερό."}
+              ? `Κοντινότερο κελί νερού στα ${formatMetric(analysis.waterDistanceM, "μ", 0)}${typeof analysis.waterBearingDeg === "number" ? ` προς ${formatBearing(analysis.waterBearingDeg)}` : ""}.`
+              : "Το επιλεγμένο στίγμα αντιστοιχεί σε κελί νερού EMODnet."}
           </p>
         </div>
         <div className="grid shrink-0 gap-2">
@@ -1069,12 +1069,12 @@ function PointAnalysisSheet({
 
       <AnalysisSection title="Βάθος και βυθός">
         <div className="grid grid-cols-2 gap-2 text-xs font-bold">
-          <InfoRow label="Βάθος βολής" value={formatMetric(spot.depth.castingDepthM, "μ")} />
-          <InfoRow label="Κοντινό ψαρεύσιμο" value={formatMetric(spot.depth.closestFishableDepthM, "μ")} />
-          <InfoRow label="Μέγιστο δείγμα" value={formatMetric(spot.depth.maxDepthM, "μ")} />
+          <InfoRow label="Βάθος βολής" value={formatMetric(spot.depth.castingDepthM, "μ", 0)} />
+          <InfoRow label="Κοντινό ψαρεύσιμο" value={formatMetric(spot.depth.closestFishableDepthM, "μ", 0)} />
+          <InfoRow label="Μέγιστο δείγμα" value={formatMetric(spot.depth.maxDepthM, "μ", 0)} />
           <InfoRow label="Κλίση" value={spot.depthStyle || unavailable()} />
           <InfoRow label="Πηγή" value={spot.depthSourceLabel || unavailable()} />
-          <InfoRow label="Βεβαιότητα" value={confidenceLabel(spot.depth.confidence)} />
+          <InfoRow label="Κάλυψη δειγμάτων" value={confidenceLabel(spot.depth.confidence)} />
           <InfoRow label="Βυθός" value={spot.seabedLabel || unavailable()} />
           <InfoRow label="Σκαλώματα" value={spot.snagRiskLabel || unavailable()} />
         </div>
@@ -1088,8 +1088,8 @@ function PointAnalysisSheet({
               <InfoRow label="Κατεύθυνση" value={`${formatBearing(cast.bearingDeg)}${cast.direction ? ` · ${cast.direction}` : ""}`} />
               <InfoRow label="Απόσταση" value={formatMetric(cast.distanceM, "μ", 0)} />
               <InfoRow label="Στόχος" value={formatCoordinates(cast.target)} />
-              <InfoRow label="Βάθος στόχου" value={formatMetric(cast.targetDepthM, "μ")} />
-              <InfoRow label="Βεβαιότητα" value={confidenceLabel(cast.confidence)} />
+              <InfoRow label="Βάθος στόχου" value={formatMetric(cast.targetDepthM, "μ", 0)} />
+              <InfoRow label="Κάλυψη δειγμάτων" value={confidenceLabel(cast.confidence)} />
             </div>
             <p className="rounded-2xl bg-slate-50 p-3 text-sm font-semibold leading-6 text-slate-700">{cast.rationale || unavailable()}</p>
           </div>
@@ -1695,8 +1695,8 @@ function DepthProfileGraphic({ spot, compact = false }: { spot: RankedSpot; comp
       <div className="flex items-center justify-between gap-3">
         <p className="text-[10px] font-black uppercase tracking-[0.18em] text-lagoon">Βάθος βολής</p>
         <div className="flex gap-1.5">
-          <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">min {minDepth.toFixed(1)}μ</span>
-          <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">max {maxDepth.toFixed(1)}μ</span>
+          <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">min {minDepth.toFixed(0)}μ</span>
+          <span className="rounded-full bg-white px-2 py-1 text-[10px] font-black text-slate-500">max {maxDepth.toFixed(0)}μ</span>
         </div>
       </div>
       <svg viewBox={`0 0 ${chartWidth} 82`} role="img" aria-label="Γραφικό προφίλ βάθους" className={`${compact ? "h-20" : "h-28"} mt-2 w-full overflow-visible`}>
@@ -1715,7 +1715,7 @@ function DepthProfileGraphic({ spot, compact = false }: { spot: RankedSpot; comp
           <g key={point.distanceM}>
             <line x1={point.x} x2={point.x} y1={waterTopY} y2="70" stroke="#0b5f6f" strokeOpacity="0.12" strokeDasharray="3 3" />
             <circle cx={point.x} cy={point.y} r="5.4" fill="#09202a" stroke="#ffffff" strokeWidth="2.4" />
-            {(!compact || point === minPoint || point === maxPoint) && <text x={point.x} y={point.y < 32 ? point.y + 13 : point.y - 7} textAnchor="middle" fontSize="10" fontWeight="800" fill="#09202a" stroke="#ffffff" strokeWidth="2.5" paintOrder="stroke">{(point.depthM ?? 0).toFixed(1)}μ</text>}
+            {(!compact || point === minPoint || point === maxPoint) && <text x={point.x} y={point.y < 32 ? point.y + 13 : point.y - 7} textAnchor="middle" fontSize="10" fontWeight="800" fill="#09202a" stroke="#ffffff" strokeWidth="2.5" paintOrder="stroke">{(point.depthM ?? 0).toFixed(0)}μ</text>}
             <text x={point.x} y="80" textAnchor="middle" fontSize="10" fontWeight="700" fill="#0b5f6f">{point.distanceM}μ</text>
           </g>
         ))}
@@ -1756,7 +1756,7 @@ function searchCacheKey(
   gpsAccuracyM?: number,
 ): string {
   return JSON.stringify({
-    version: 7,
+    version: 8,
     mode,
     query: query.trim().toLowerCase().replace(/\s+/g, " "),
     resultLimit,
@@ -1925,7 +1925,7 @@ function toDatetimeLocal(value: string): string {
 function depthProfileText(spot: RankedSpot): string {
   const points = spot.depth.castingProfile
     .filter((point) => typeof point.depthM === "number")
-    .map((point) => `${point.distanceM}μ: ${point.depthM?.toFixed(1)}μ`);
+    .map((point) => `${point.distanceM}μ: ${point.depthM?.toFixed(0)}μ`);
 
   return points.length ? points.join(" · ") : "Δεν υπάρχει προφίλ βολής";
 }

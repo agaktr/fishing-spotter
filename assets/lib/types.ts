@@ -80,7 +80,7 @@ export interface CandidateSpot extends Coordinates {
 }
 
 export interface DepthProfile {
-  source: "opentopodata-gebco2020" | "estimated" | "unavailable";
+  source: "emodnet-dtm-2024" | "opentopodata-gebco2020" | "estimated" | "unavailable";
   hasNearbyWater: boolean;
   isSpotInWater?: boolean;
   shoreDistanceM?: number;

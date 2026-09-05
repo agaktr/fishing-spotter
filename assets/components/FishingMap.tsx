@@ -131,6 +131,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
     });
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
+    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-right");
 
     map.on("load", () => {
       map.addSource("radius", {
@@ -866,7 +867,7 @@ function toPointAnalysisCollection(analysis: PointAnalysis, spot?: RankedSpot): 
   const profilePoints = spot?.depth.castingProfile.filter(hasMapCoordinates) ?? [];
 
   if (spot && !spot.depth.hasNearbyWater) {
-    features.push(pointFeature(analysis.requestedPoint, "requested", "Δεν βρέθηκε μετρημένο νερό"));
+    features.push(pointFeature(analysis.requestedPoint, "requested", "Δεν βρέθηκε κελί νερού"));
     return { type: "FeatureCollection", features };
   }
 
@@ -907,7 +908,7 @@ function toPointAnalysisCollection(analysis: PointAnalysis, spot?: RankedSpot): 
     features.push(pointFeature(
       { lat: point.lat, lon: point.lon },
       "profile",
-      typeof point.depthM === "number" ? `${point.distanceM}μ / ${round(point.depthM, 1)}μ` : `${point.distanceM}μ`,
+      typeof point.depthM === "number" ? `${point.distanceM}μ / ${round(point.depthM, 0)}μ` : `${point.distanceM}μ`,
     ));
   }
 
@@ -915,7 +916,7 @@ function toPointAnalysisCollection(analysis: PointAnalysis, spot?: RankedSpot): 
     features.push(pointFeature(
       recommendation.target,
       "target",
-      typeof recommendation.targetDepthM === "number" ? `Στόχος ${round(recommendation.targetDepthM, 1)}μ` : "Στόχος βολής",
+      typeof recommendation.targetDepthM === "number" ? `Στόχος ${round(recommendation.targetDepthM, 0)}μ` : "Στόχος βολής",
     ));
   }
 
@@ -1036,9 +1037,9 @@ function toDepthProfileCollection(location: GeocodedLocation, selectedSpot?: Ran
         coordinates: [projected.lon, projected.lat],
       },
       properties: {
-        label: `${point.distanceM}μ / ${round(point.depthM ?? 0, 1)}μ`,
+        label: `${point.distanceM}μ / ${round(point.depthM ?? 0, 0)}μ`,
         distanceM: point.distanceM,
-        depthM: round(point.depthM ?? 0, 1),
+        depthM: round(point.depthM ?? 0, 0),
       },
     });
   }

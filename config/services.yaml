@@ -9,7 +9,8 @@
 parameters:
     app.nominatim_endpoint: '%env(NOMINATIM_ENDPOINT)%'
     app.overpass_endpoint: '%env(OVERPASS_ENDPOINT)%'
-    app.open_topo_dataset: '%env(OPEN_TOPO_DATASET)%'
+    app.emodnet_depth_endpoint: '%env(EMODNET_DEPTH_ENDPOINT)%'
+    app.emodnet_depth_release: '%env(EMODNET_DEPTH_RELEASE)%'
     app.trip_media_dir: '%env(resolve:TRIP_MEDIA_DIR)%'
 
 services:
@@ -29,7 +30,8 @@ services:
             $upstreamCache: '@cache.upstream'
             $nominatimEndpoint: '%app.nominatim_endpoint%'
             $overpassEndpoint: '%app.overpass_endpoint%'
-            $openTopoDataset: '%app.open_topo_dataset%'
+            $emodnetDepthEndpoint: '%app.emodnet_depth_endpoint%'
+            $emodnetDepthRelease: '%app.emodnet_depth_release%'
 
     App\Service\TripMediaStorage:
         arguments:

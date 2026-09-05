@@ -38,7 +38,7 @@ final class ApiController extends AbstractController
                 'spots' => 'POST /api/spots',
             ],
             'spotModes' => [
-                'nearby' => 'Ranks measured OSM coastal candidates; shore requires coast within 200m and boat requires water at the marker.',
+                'nearby' => 'Ranks OSM coastal candidates using EMODnet DTM cell estimates; shore requires coast within 200m and boat requires water at the marker.',
                 'point' => 'Requires coordinates {lat, lon}; accepts optional numeric gpsAccuracyM and analyzes only that point.',
             ],
             'identity' => 'Send X-Fishing-User: <username> for user-specific endpoints.',

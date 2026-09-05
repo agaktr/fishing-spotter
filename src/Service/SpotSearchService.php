@@ -13,6 +13,8 @@ final class SpotSearchService
     private const NEARBY_BEARINGS = [0, 45, 90, 135, 180, 225, 270, 315];
     private const NEARBY_DISTANCES_M = [50, 100, 150, 200];
     private const MAX_COAST_DISTANCE_M = 200;
+    private const EMODNET_GRID_DEGREES = 1 / 960;
+    private const EMODNET_CONCURRENCY = 6;
 
     private const PROFILES = [
         'surfcasting' => ['label' => 'Surfcasting', 'aliases' => ['surfcasting', 'surf casting', 'beach casting', 'casting', 'ψάρεμα παραλίας', 'παραλία'], 'depth' => [4, 12, 2, 18], 'waves' => [0.35, 1.25, 1.9], 'species' => ['τσιπούρα', 'λαβράκι', 'σαργός', 'κέφαλος', 'μελανούρι', 'σαλάχια'], 'bait' => ['σκουλήκι', 'καλαμάρι', 'γαρίδα', 'φιλέτο σαρδέλας', 'μύδι'], 'times' => ['σούρουπο', 'πρώτες ώρες νύχτας', 'ξημέρωμα'], 'advice' => 'Ξεκίνα στα 60-120μ και μετά μίκρυνε τη βολή αν τα ψάρια τρώνε στο πρώτο αυλάκι.', 'fit' => ['beach' => 98, 'bay' => 82, 'estuary' => 84, 'shoal' => 78, 'headland' => 58, 'breakwater' => 52, 'rocky' => 45, 'harbour' => 40, 'pier' => 62, 'reef' => 48, 'marina' => 25, 'fallback' => 55]],
@@ -39,7 +41,8 @@ final class SpotSearchService
         private readonly CacheItemPoolInterface $upstreamCache,
         private readonly string $nominatimEndpoint,
         private readonly string $overpassEndpoint,
-        private readonly string $openTopoDataset,
+        private readonly string $emodnetDepthEndpoint,
+        private readonly string $emodnetDepthRelease,
     ) {
     }
 
@@ -80,7 +83,7 @@ final class SpotSearchService
         }
 
         $cacheEnabled = $mode !== 'point' || $cachePointAnalysis;
-        $keyData = ['version' => 13, 'mode' => $mode, 'query' => mb_strtolower(preg_replace('/\s+/u', ' ', $query) ?? $query), 'radiusKm' => $radius, 'resultLimit' => $limit, 'locationOnly' => ($body['locationOnly'] ?? false) === true, 'coordinates' => $coordinates ? ['lat' => round($location['lat'], 6), 'lon' => round($location['lon'], 6)] : null, 'locationLabel' => $coordinates ? $location['displayName'] : null, 'gpsAccuracyM' => $gpsAccuracyM];
+        $keyData = ['version' => 14, 'depthDataset' => 'emodnet-dtm-'.$this->emodnetDepthRelease, 'mode' => $mode, 'query' => mb_strtolower(preg_replace('/\s+/u', ' ', $query) ?? $query), 'radiusKm' => $radius, 'resultLimit' => $limit, 'locationOnly' => ($body['locationOnly'] ?? false) === true, 'coordinates' => $coordinates ? ['lat' => round($location['lat'], 6), 'lon' => round($location['lon'], 6)] : null, 'locationLabel' => $coordinates ? $location['displayName'] : null, 'gpsAccuracyM' => $gpsAccuracyM];
         $cacheKey = 'spots_'.hash('sha256', json_encode($keyData, JSON_THROW_ON_ERROR));
         $cached = null;
         if ($cacheEnabled) {
@@ -113,8 +116,8 @@ final class SpotSearchService
                 $warnings[] = 'Δεν βρέθηκαν χαρτογραφημένα παράκτια σημεία στην επιλεγμένη ακτίνα.';
             } elseif (count($validatedCandidates) < count($candidates)) {
                 $warnings[] = $intent['technique'] === 'boat-fishing'
-                    ? sprintf('Απορρίφθηκαν %d σημεία χωρίς επιβεβαιωμένο νερό στην ακριβή θέση.', count($candidates) - count($validatedCandidates))
-                    : sprintf('Απορρίφθηκαν %d σημεία χωρίς επιβεβαιωμένη ακτή εντός %dμ.', count($candidates) - count($validatedCandidates), self::MAX_COAST_DISTANCE_M);
+                    ? sprintf('Απορρίφθηκαν %d σημεία χωρίς κελί νερού EMODnet στη θέση.', count($candidates) - count($validatedCandidates))
+                    : sprintf('Απορρίφθηκαν %d σημεία χωρίς μετάβαση ξηράς/νερού EMODnet εντός %dμ.', count($candidates) - count($validatedCandidates), self::MAX_COAST_DISTANCE_M);
             }
             if (count($spots) < $limit) {
                 $warnings[] = sprintf('Εμφανίζονται μόνο %d επιβεβαιωμένα παράκτια σημεία αντί για %d.', count($spots), $limit);
@@ -129,7 +132,7 @@ final class SpotSearchService
                 'cache' => ['hit' => false, 'source' => 'new', 'entries' => $this->cacheEntries(), 'maxAgeSeconds' => 3600, 'ageSeconds' => 0],
                 'spots' => $spots,
                 'warnings' => $warnings,
-                'attributions' => ['© OpenStreetMap contributors', 'Open-Meteo', 'OpenTopoData / GEBCO'],
+                'attributions' => ['© OpenStreetMap contributors', 'Open-Meteo', 'EMODnet Bathymetry Consortium ('.$this->emodnetDepthRelease.'), CC BY 4.0 · Not for navigation'],
             ];
         }
         if ($cached !== null) {
@@ -273,10 +276,10 @@ final class SpotSearchService
             }
         }
         $depthCacheData = [
-            'version' => 1,
+            'version' => 2,
             'algorithm' => 'point-8-bearings-7-distances-exact',
-            'dataset' => $this->openTopoDataset,
-            'interpolation' => 'bilinear',
+            'dataset' => 'emodnet-dtm-'.$this->emodnetDepthRelease,
+            'sampling' => 'native-cell-mean',
             'bearings' => self::POINT_BEARINGS,
             'distancesM' => self::POINT_DISTANCES_M,
             'locations' => array_map(static fn (array $sample): array => [round($sample['lat'], 7), round($sample['lon'], 7)], $samples),
@@ -312,22 +315,22 @@ final class SpotSearchService
             'direction' => $this->compassDirection($castChoice['bearing']),
             'distanceM' => $castChoice['target']['distanceM'],
             'target' => ['lat' => $castChoice['target']['lat'], 'lon' => $castChoice['target']['lon']],
-            'targetDepthM' => round($castChoice['target']['depthM'], 1),
-            'rationale' => sprintf('Μετρημένο βάθος %.1fμ στα %dμ για %s%s.', $castChoice['target']['depthM'], $castChoice['target']['distanceM'], $profile['label'], $castChoice['deepening'] > 0.5 ? ', με χρήσιμη αύξηση βάθους στην ίδια κατεύθυνση' : ''),
+            'targetDepthM' => (int) round($castChoice['target']['depthM']),
+            'rationale' => sprintf('Εκτιμώμενο βάθος κελιού DTM %.0fμ στα %dμ για %s%s.', $castChoice['target']['depthM'], $castChoice['target']['distanceM'], $profile['label'], $castChoice['deepening'] > 0.5 ? ', με χρήσιμη αύξηση βάθους στην ίδια κατεύθυνση' : ''),
             'confidence' => $castChoice['confidence'],
         ] : null;
 
         $pointWarnings = [];
         if ($measuredCount === 0) {
-            $pointWarnings[] = 'Η δημόσια υπηρεσία βυθομετρίας δεν επέστρεψε μετρήσεις για το σημείο.';
+            $pointWarnings[] = 'Η υπηρεσία EMODnet δεν επέστρεψε δείγματα DTM για το σημείο.';
         } elseif (!$waterFound) {
-            $pointWarnings[] = 'Δεν εντοπίστηκε μετρημένο νερό στα δείγματα έως 1200μ από το ζητούμενο σημείο.';
+            $pointWarnings[] = 'Δεν εντοπίστηκε νερό στα δείγματα DTM έως 1200μ από το ζητούμενο σημείο.';
         } elseif ($waterDistanceM > 150) {
-            $pointWarnings[] = sprintf('Το πλησιέστερο μετρημένο νερό είναι στα %dμ, πέρα από τη συνήθη ζώνη βολής.', $waterDistanceM);
+            $pointWarnings[] = sprintf('Το πλησιέστερο κελί νερού είναι στα %dμ, πέρα από τη συνήθη ζώνη βολής.', $waterDistanceM);
         } elseif ($castChoice === null) {
-            $pointWarnings[] = 'Δεν υπάρχουν αρκετά μετρημένα υδάτινα δείγματα εντός 150μ για κατεύθυνση βολής.';
+            $pointWarnings[] = 'Δεν υπάρχουν αρκετά υδάτινα δείγματα DTM εντός 150μ για κατεύθυνση βολής.';
         } elseif (!$castChoice['suitable']) {
-            $pointWarnings[] = sprintf('Τα μετρημένα βάθη εντός 150μ είναι έξω από το χρήσιμο εύρος %.1f-%.1fμ για %s.', $profile['depth'][2], $profile['depth'][3], $profile['label']);
+            $pointWarnings[] = sprintf('Τα εκτιμώμενα βάθη εντός 150μ είναι έξω από το χρήσιμο εύρος %.1f-%.1fμ για %s.', $profile['depth'][2], $profile['depth'][3], $profile['label']);
         }
         $warnings = [...$conditions['warnings'], ...$pointWarnings];
         $depth = $this->pointDepthProfile($depthSamples, $wetSamples, $exactIsWater, $waterSample, $castChoice, $measuredCount);
@@ -339,10 +342,10 @@ final class SpotSearchService
         $score = $waterFound ? (int) round($techniqueScore * 0.2 + $depthScore * 0.5 + $conditionScore * 0.3) : 0;
         $depthRange = is_numeric($depthValue) ? $this->depthRange((float) $depthValue, $profile) : $this->unavailableDepthRange($profile);
         $summary = !$waterFound
-            ? 'Δεν ήταν διαθέσιμη επιβεβαιωμένη υδάτινη ανάλυση για το ζητούμενο σημείο.'
+            ? 'Δεν ήταν διαθέσιμη υδάτινη εκτίμηση DTM για το ζητούμενο σημείο.'
             : ($waterDistanceM === 0
-                ? sprintf('Μετρημένη ανάλυση του επιλεγμένου υδάτινου σημείου για %s.', $profile['label'])
-                : sprintf('Η ανάλυση έγινε στο πλησιέστερο μετρημένο νερό, %dμ από το ζητούμενο σημείο, για %s.', $waterDistanceM, $profile['label']));
+                ? sprintf('Ανάλυση μέσης τιμής κελιού EMODnet DTM για %s.', $profile['label'])
+                : sprintf('Η ανάλυση έγινε στο πλησιέστερο κελί νερού, %dμ από το ζητούμενο σημείο, για %s.', $waterDistanceM, $profile['label']));
         $spot = [
             'id' => sprintf('point:%.6f,%.6f', $requested['lat'], $requested['lon']),
             'osmType' => 'fallback',
@@ -363,14 +366,14 @@ final class SpotSearchService
             'likelyFish' => $waterFound ? $profile['species'] : [],
             'recommendedTechniques' => [$profile['label']],
             'bait' => $waterFound ? $profile['bait'] : [],
-            'castingAdvice' => $castRecommendation['rationale'] ?? ($pointWarnings[0] ?? 'Δεν δίνεται κατεύθυνση βολής χωρίς κατάλληλο μετρημένο δείγμα.'),
+            'castingAdvice' => $castRecommendation['rationale'] ?? ($pointWarnings[0] ?? 'Δεν δίνεται κατεύθυνση βολής χωρίς κατάλληλο δείγμα DTM.'),
             'bestWindow' => implode(', ', $profile['times']),
             'depthStyle' => $depth['style'],
             'techniqueDepthRange' => $depthRange,
-            'depthSourceLabel' => $waterFound ? 'OpenTopoData / GEBCO 2020, μετρημένη κατεύθυνση' : 'Μη διαθέσιμο μετρημένο βάθος',
+            'depthSourceLabel' => $waterFound ? 'EMODnet DTM '.$this->emodnetDepthRelease.', μέση τιμή κελιού ~115μ' : 'Μη διαθέσιμη εκτίμηση βάθους',
             'seabedLabel' => 'άγνωστος',
             'snagRiskLabel' => 'άγνωστα',
-            'confidenceLabel' => $waterFound ? 'Δημόσια δείγματα GEBCO γύρω από το ακριβές σημείο' : 'Δεν βρέθηκε επιβεβαιωμένο υδάτινο δείγμα',
+            'confidenceLabel' => $waterFound ? 'Κάλυψη δειγμάτων EMODnet γύρω από το σημείο, όχι μέτρηση βυθομέτρου' : 'Δεν βρέθηκε υδάτινο δείγμα DTM',
             'conditionsLabel' => $this->conditionsLabel($conditions),
             'warnings' => $pointWarnings,
             'breakdown' => [
@@ -405,7 +408,7 @@ final class SpotSearchService
             'cache' => ['hit' => false, 'source' => 'new', 'entries' => $this->cacheEntries(), 'maxAgeSeconds' => $cacheEnabled ? 3600 : 0, 'ageSeconds' => 0],
             'spots' => [$spot],
             'warnings' => $warnings,
-            'attributions' => ['Open-Meteo', 'OpenTopoData / GEBCO'],
+            'attributions' => ['Open-Meteo', 'EMODnet Bathymetry Consortium ('.$this->emodnetDepthRelease.'), CC BY 4.0 · Not for navigation'],
             'pointAnalysis' => $pointAnalysis,
         ];
     }
@@ -470,7 +473,7 @@ final class SpotSearchService
                 }
                 $point = ['distanceM' => $distanceM, 'confidence' => 'none'];
                 if (is_numeric($sample['elevation'] ?? null) && (float) $sample['elevation'] < 0) {
-                    $point = [...$point, 'lat' => $sample['lat'], 'lon' => $sample['lon'], 'depthM' => round(abs((float) $sample['elevation']), 1), 'confidence' => 'measured'];
+                    $point = [...$point, 'lat' => $sample['lat'], 'lon' => $sample['lon'], 'depthM' => (int) round(abs((float) $sample['elevation'])), 'confidence' => 'estimated'];
                 }
                 $castingProfile[] = $point;
             }
@@ -486,13 +489,13 @@ final class SpotSearchService
         }
         $waterFound = $waterSample !== null;
         $depth = [
-            'source' => $waterFound ? 'opentopodata-gebco2020' : 'unavailable',
+            'source' => $waterFound ? 'emodnet-dtm-'.$this->emodnetDepthRelease : 'unavailable',
             'hasNearbyWater' => $waterFound,
             'castingProfile' => $castingProfile,
             'slope' => $slope,
             'seabedType' => 'unknown',
             'snagRisk' => 'unknown',
-            'style' => $waterFound ? $this->depthStyle($slope) : 'μη διαθέσιμο μετρημένο βάθος',
+            'style' => $waterFound ? $this->depthStyle($slope) : 'μη διαθέσιμη εκτίμηση βάθους',
             'sampleCount' => $measuredCount,
             'confidence' => !$waterFound ? 'none' : (count($profileWet) >= 3 ? 'medium' : 'low'),
         ];
@@ -505,11 +508,11 @@ final class SpotSearchService
                 $depth['waterBearingDeg'] = $profileBearing;
             }
             if ($depths !== []) {
-                $depth['closestFishableDepthM'] = min($depths);
-                $depth['maxDepthM'] = max($depths);
+                $depth['closestFishableDepthM'] = (int) round(min($depths));
+                $depth['maxDepthM'] = (int) round(max($depths));
             }
             if ($castChoice !== null) {
-                $depth['castingDepthM'] = $castChoice['target']['depthM'];
+                $depth['castingDepthM'] = (int) round($castChoice['target']['depthM']);
             }
         }
 
@@ -518,7 +521,7 @@ final class SpotSearchService
 
     private function unavailableDepthRange(array $profile): array
     {
-        return ['techniqueLabel' => $profile['label'], 'idealMinM' => $profile['depth'][0], 'idealMaxM' => $profile['depth'][1], 'softMinM' => $profile['depth'][2], 'softMaxM' => $profile['depth'][3], 'status' => 'unknown', 'label' => 'Δεν υπάρχει μετρημένο υδάτινο βάθος για αξιολόγηση της τεχνικής.'];
+        return ['techniqueLabel' => $profile['label'], 'idealMinM' => $profile['depth'][0], 'idealMaxM' => $profile['depth'][1], 'softMinM' => $profile['depth'][2], 'softMaxM' => $profile['depth'][3], 'status' => 'unknown', 'label' => 'Δεν υπάρχει διαθέσιμη εκτίμηση υδάτινου βάθους για αξιολόγηση της τεχνικής.'];
     }
 
     private function compassDirection(float $bearing): string
@@ -560,9 +563,9 @@ final class SpotSearchService
         }
         $bearings = count($candidates) > 36 ? [0, 90, 180, 270] : self::NEARBY_BEARINGS;
         $cacheData = [
-            'version' => 3,
-            'dataset' => $this->openTopoDataset,
-            'interpolation' => 'bilinear',
+            'version' => 4,
+            'dataset' => 'emodnet-dtm-'.$this->emodnetDepthRelease,
+            'sampling' => 'native-cell-mean',
             'bearings' => $bearings,
             'distancesM' => self::NEARBY_DISTANCES_M,
             'locations' => array_map(static fn (array $candidate): array => [$candidate['id'], round($candidate['lat'], 6), round($candidate['lon'], 6)], $candidates),
@@ -666,7 +669,7 @@ final class SpotSearchService
                     'max' => $depths === [] ? null : max($depths),
                     'slope' => $slope,
                     'bearing' => $choice['bearing'] ?? null,
-                    'points' => array_map(static fn (array $sample): array => ['distanceM' => $sample['distanceM'], 'depthM' => round($sample['depthM'], 1), 'lat' => $sample['lat'], 'lon' => $sample['lon'], 'confidence' => 'measured'], array_values(array_filter($profileSamples, static fn (array $sample): bool => $sample['distanceM'] > 0))),
+                    'points' => array_map(static fn (array $sample): array => ['distanceM' => $sample['distanceM'], 'depthM' => (int) round($sample['depthM']), 'lat' => $sample['lat'], 'lon' => $sample['lon'], 'confidence' => 'estimated'], array_values(array_filter($profileSamples, static fn (array $sample): bool => $sample['distanceM'] > 0))),
                     'sampleCount' => count($measuredSamples),
                     'confidence' => count($profileSamples) >= 4 ? 'high' : (count($profileSamples) >= 2 ? 'medium' : 'low'),
                 ];
@@ -700,44 +703,94 @@ final class SpotSearchService
 
     private function sampleElevations(array $samples): array
     {
-        $successfulBatches = 0;
-        $batchCount = (int) ceil(count($samples) / 90);
-        $lastRequestAt = null;
-        for ($offset = 0; $offset < count($samples); $offset += 90) {
-            $batch = array_slice($samples, $offset, 90);
-            try {
-                if ($lastRequestAt !== null) {
-                    $waitMicroseconds = (int) max(0, (1 - (microtime(true) - $lastRequestAt)) * 1_000_000);
-                    if ($waitMicroseconds > 0) {
-                        usleep($waitMicroseconds);
-                    }
-                }
-                $lastRequestAt = microtime(true);
-                $payload = $this->http->request('POST', 'https://api.opentopodata.org/v1/'.rawurlencode($this->openTopoDataset), [
-                    'json' => ['locations' => implode('|', array_map(static fn (array $sample): string => $sample['lat'].','.$sample['lon'], $batch)), 'interpolation' => 'bilinear'],
-                    'headers' => ['Accept' => 'application/json'],
+        $groups = [];
+        foreach ($samples as $index => $sample) {
+            $groups[$sample['spotId'] ?? '_point'][$index] = $sample;
+        }
+
+        $completedGroups = 0;
+        foreach (array_chunk($groups, self::EMODNET_CONCURRENCY, true) as $groupBatch) {
+            $responses = [];
+            foreach ($groupBatch as $groupId => $groupSamples) {
+                $latitudes = array_column($groupSamples, 'lat');
+                $longitudes = array_column($groupSamples, 'lon');
+                $margin = self::EMODNET_GRID_DEGREES;
+                $query = http_build_query([
+                    'service' => 'WCS',
+                    'version' => '2.0.1',
+                    'request' => 'GetCoverage',
+                    'coverageId' => 'emodnet__mean',
+                    'format' => 'text/plain',
+                ], '', '&', PHP_QUERY_RFC3986);
+                $query .= '&subset='.rawurlencode(sprintf('Long(%.8F,%.8F)', min($longitudes) - $margin, max($longitudes) + $margin));
+                $query .= '&subset='.rawurlencode(sprintf('Lat(%.8F,%.8F)', min($latitudes) - $margin, max($latitudes) + $margin));
+                $responses[$groupId] = $this->http->request('GET', rtrim($this->emodnetDepthEndpoint, '?').'?' . $query, [
+                    'headers' => ['Accept' => 'text/plain', 'User-Agent' => 'FishingSpotter/1.0 Symfony'],
                     'timeout' => 22,
-                ])->toArray(false);
-                if (($payload['status'] ?? null) !== 'OK' || !is_array($payload['results'] ?? null) || count($payload['results']) !== count($batch)) {
-                    continue;
-                }
-                $complete = true;
-                foreach ($payload['results'] as $resultIndex => $result) {
-                    if (!isset($batch[$resultIndex]) || !is_numeric($result['elevation'] ?? null)) {
-                        $complete = false;
-                        break;
+                ]);
+            }
+
+            foreach ($responses as $groupId => $response) {
+                try {
+                    if ($response->getStatusCode() !== 200) {
+                        continue;
                     }
-                    $samples[$offset + $resultIndex]['elevation'] = (float) $result['elevation'];
+                    $grid = $this->parseEmodnetCoverage($response->getContent());
+                    foreach ($groupBatch[$groupId] as $index => $sample) {
+                        $elevation = $this->emodnetElevationAt($grid, (float) $sample['lat'], (float) $sample['lon']);
+                        if ($elevation === null) {
+                            continue 2;
+                        }
+                        $samples[$index]['elevation'] = $elevation;
+                    }
+                    ++$completedGroups;
+                } catch (\Throwable) {
                 }
-                if (!$complete) {
-                    continue;
-                }
-                ++$successfulBatches;
-            } catch (\Throwable) {
             }
         }
 
-        return $successfulBatches === $batchCount ? $samples : [];
+        return $completedGroups > 0 ? $samples : [];
+    }
+
+    /** @return array{originLon: float, originLat: float, stepLon: float, stepLat: float, minColumn: int, minRow: int, rows: list<list<string>>} */
+    private function parseEmodnetCoverage(string $body): array
+    {
+        $parameters = [];
+        foreach (['elt_0_0' => 'stepLon', 'elt_0_2' => 'originLon', 'elt_1_1' => 'stepLat', 'elt_1_2' => 'originLat'] as $source => $target) {
+            if (!preg_match('/PARAMETER\["'.preg_quote($source, '/').'",\s*([-+0-9.eE]+)\]/', $body, $match)) {
+                throw new \RuntimeException('EMODnet returned an unreadable grid transform.');
+            }
+            $parameters[$target] = (float) $match[1];
+        }
+        if (!preg_match('/Grid range:\s*GridEnvelope2D\[(\d+)\.\.(\d+),\s*(\d+)\.\.(\d+)\]/', $body, $range)) {
+            throw new \RuntimeException('EMODnet returned an unreadable grid range.');
+        }
+        if (!preg_match('/Contents:\s*Band 0:\s*(.+)\s*$/s', $body, $contents)) {
+            throw new \RuntimeException('EMODnet returned no depth values.');
+        }
+
+        $rows = array_values(array_filter(array_map(
+            static fn (string $line): array => preg_split('/\s+/', trim($line)) ?: [],
+            preg_split('/\R/', trim($contents[1])) ?: [],
+        )));
+        $minColumn = (int) $range[1];
+        $minRow = (int) $range[3];
+        $width = (int) $range[2] - $minColumn + 1;
+        $height = (int) $range[4] - $minRow + 1;
+        if (count($rows) !== $height || array_filter($rows, static fn (array $row): bool => count($row) !== $width) !== []) {
+            throw new \RuntimeException('EMODnet returned an incomplete depth grid.');
+        }
+
+        return [...$parameters, 'minColumn' => $minColumn, 'minRow' => $minRow, 'rows' => $rows];
+    }
+
+    private function emodnetElevationAt(array $grid, float $lat, float $lon): ?float
+    {
+        $column = (int) round(($lon - $grid['originLon']) / $grid['stepLon']) - $grid['minColumn'];
+        $row = (int) round(($lat - $grid['originLat']) / $grid['stepLat']) - $grid['minRow'];
+        $value = $grid['rows'][$row][$column] ?? null;
+
+        return is_string($value) && is_numeric($value) ? (float) $value : null;
     }
 
     private function rank(array $candidates, array $intent, array $conditions, array $depthProfiles, int $limit): array
@@ -762,7 +815,7 @@ final class SpotSearchService
             $score = (int) round($fitScore * 0.4 + $depthScore * 0.3 + $accessScore * 0.15 + $conditionScore * 0.15);
             $depthRange = $this->depthRange($casting, $profile);
             $conditionsLabel = $this->conditionsLabel($conditions);
-            $depth = ['source' => 'opentopodata-gebco2020', 'hasNearbyWater' => true, 'shoreDistanceM' => $measuredDepth['waterDistanceM'], 'closestFishableDepthM' => $closest, 'castingDepthM' => $casting, 'maxDepthM' => $max, 'castingProfile' => $measuredDepth['points'], 'slope' => $slope, 'seabedType' => $seabed, 'snagRisk' => $snag, 'style' => $this->depthStyle($slope), 'sampleCount' => $measuredDepth['sampleCount'], 'confidence' => $measuredDepth['confidence']];
+            $depth = ['source' => 'emodnet-dtm-'.$this->emodnetDepthRelease, 'hasNearbyWater' => true, 'shoreDistanceM' => $measuredDepth['waterDistanceM'], 'closestFishableDepthM' => (int) round($closest), 'castingDepthM' => (int) round($casting), 'maxDepthM' => (int) round($max), 'castingProfile' => $measuredDepth['points'], 'slope' => $slope, 'seabedType' => $seabed, 'snagRisk' => $snag, 'style' => $this->depthStyle($slope), 'sampleCount' => $measuredDepth['sampleCount'], 'confidence' => $measuredDepth['confidence']];
             if ($measuredDepth['exactIsWater'] !== null) {
                 $depth['isSpotInWater'] = $measuredDepth['exactIsWater'];
             }
@@ -773,7 +826,7 @@ final class SpotSearchService
                 'score' => $score,
                 'summary' => sprintf('%s για %s: %s, περίπου %.0fμ βάθος στη ζώνη βολής.', $score >= 75 ? 'Πολύ καλή προοπτική' : ($score >= 60 ? 'Καλή προοπτική' : 'Μέτρια προοπτική'), $profile['label'], $this->categoryName($candidate['category']), $casting),
                 'depth' => $depth,
-                'marine' => $conditions['marine'], 'weather' => $conditions['weather'], 'likelyFish' => $profile['species'], 'recommendedTechniques' => [$profile['label']], 'bait' => $profile['bait'], 'castingAdvice' => $profile['advice'], 'bestWindow' => implode(', ', $profile['times']), 'depthStyle' => $this->depthStyle($slope), 'techniqueDepthRange' => $depthRange, 'depthSourceLabel' => 'OpenTopoData / GEBCO 2020', 'seabedLabel' => $this->seabedLabel($seabed), 'snagRiskLabel' => ['low' => 'χαμηλά', 'medium' => 'μέτρια', 'high' => 'υψηλά', 'unknown' => 'άγνωστα'][$snag], 'confidenceLabel' => 'Δημόσια δείγματα GEBCO γύρω από το χαρτογραφημένο σημείο', 'conditionsLabel' => $conditionsLabel, 'warnings' => array_values(array_filter([$conditionScore < 35 ? 'Οι συνθήκες είναι έξω από το ασφαλές εύρος της τεχνικής.' : null])), 'breakdown' => [['key' => 'technique', 'label' => 'Καταλληλότητα τεχνικής', 'score' => $fitScore, 'weight' => 40, 'explanation' => 'Συνδυασμός τεχνικής και τύπου ακτής.'], ['key' => 'depth', 'label' => 'Βάθος', 'score' => $depthScore, 'weight' => 30, 'explanation' => $depthRange['label']], ['key' => 'access', 'label' => 'Πρόσβαση', 'score' => $accessScore, 'weight' => 15, 'explanation' => 'Εκτίμηση από τον τύπο σημείου.'], ['key' => 'conditions', 'label' => 'Συνθήκες', 'score' => $conditionScore, 'weight' => 15, 'explanation' => $conditionsLabel]],
+                'marine' => $conditions['marine'], 'weather' => $conditions['weather'], 'likelyFish' => $profile['species'], 'recommendedTechniques' => [$profile['label']], 'bait' => $profile['bait'], 'castingAdvice' => $profile['advice'], 'bestWindow' => implode(', ', $profile['times']), 'depthStyle' => $this->depthStyle($slope), 'techniqueDepthRange' => $depthRange, 'depthSourceLabel' => 'EMODnet DTM '.$this->emodnetDepthRelease.', μέση τιμή κελιού ~115μ', 'seabedLabel' => $this->seabedLabel($seabed), 'snagRiskLabel' => ['low' => 'χαμηλά', 'medium' => 'μέτρια', 'high' => 'υψηλά', 'unknown' => 'άγνωστα'][$snag], 'confidenceLabel' => 'Κάλυψη δειγμάτων EMODnet, όχι μέτρηση βυθομέτρου', 'conditionsLabel' => $conditionsLabel, 'warnings' => array_values(array_filter([$conditionScore < 35 ? 'Οι συνθήκες είναι έξω από το ασφαλές εύρος της τεχνικής.' : null])), 'breakdown' => [['key' => 'technique', 'label' => 'Καταλληλότητα τεχνικής', 'score' => $fitScore, 'weight' => 40, 'explanation' => 'Συνδυασμός τεχνικής και τύπου ακτής.'], ['key' => 'depth', 'label' => 'Βάθος', 'score' => $depthScore, 'weight' => 30, 'explanation' => $depthRange['label']], ['key' => 'access', 'label' => 'Πρόσβαση', 'score' => $accessScore, 'weight' => 15, 'explanation' => 'Εκτίμηση από τον τύπο σημείου.'], ['key' => 'conditions', 'label' => 'Συνθήκες', 'score' => $conditionScore, 'weight' => 15, 'explanation' => $conditionsLabel]],
             ];
         }
         usort($spots, static fn (array $a, array $b): int => $b['score'] <=> $a['score']);
@@ -791,7 +844,7 @@ final class SpotSearchService
         $status = $value < $softMin ? 'too-shallow' : ($value < $idealMin ? 'shallow' : ($value <= $idealMax ? 'ideal' : ($value <= $softMax ? 'deep' : 'too-deep')));
         $labels = ['ideal' => sprintf('%.0fμ: μέσα στο ιδανικό %.0f-%.0fμ για %s.', $value, $idealMin, $idealMax, $profile['label']), 'shallow' => sprintf('%.0fμ: λίγο ρηχότερα από το ιδανικό εύρος.', $value), 'deep' => sprintf('%.0fμ: βαθύτερα από το ιδανικό αλλά ψαρεύσιμα.', $value), 'too-shallow' => sprintf('%.0fμ: πολύ ρηχά για την τεχνική.', $value), 'too-deep' => sprintf('%.0fμ: πολύ βαθιά για την τεχνική.', $value)];
 
-        return ['techniqueLabel' => $profile['label'], 'valueM' => $value, 'idealMinM' => $idealMin, 'idealMaxM' => $idealMax, 'softMinM' => $softMin, 'softMaxM' => $softMax, 'status' => $status, 'label' => $labels[$status]];
+        return ['techniqueLabel' => $profile['label'], 'valueM' => (int) round($value), 'idealMinM' => $idealMin, 'idealMaxM' => $idealMax, 'softMinM' => $softMin, 'softMaxM' => $softMax, 'status' => $status, 'label' => $labels[$status]];
     }
 
     private function conditionsLabel(array $conditions): string
