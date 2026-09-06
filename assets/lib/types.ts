@@ -35,14 +35,17 @@ export interface Coordinates {
 export type SpotSearchMode = "nearby" | "point";
 
 export interface SpotsApiRequest {
-  mode?: SpotSearchMode;
-  query: string;
+  technique: TechniqueId;
+  location: string;
+  targetSpecies?: string;
+  fishingAt?: string;
+  mode: SpotSearchMode;
   coordinates?: Coordinates;
   locationLabel?: string;
   gpsAccuracyM?: number;
-  resultLimit?: number;
-  radiusKm?: number;
-  locationOnly?: boolean;
+  resultLimit: number;
+  radiusKm: number;
+  saveHistory: boolean;
 }
 
 export interface SearchIntent {
@@ -116,7 +119,14 @@ export interface TechniqueDepthRange {
   label: string;
 }
 
-export interface MarineSnapshot {
+export interface ConditionsMetadata {
+  validAt?: string;
+  fetchedAt?: string;
+  sourceCoordinates?: Coordinates;
+  temporalMode?: string;
+}
+
+export interface MarineSnapshot extends ConditionsMetadata {
   waveHeightM?: number;
   waveDirectionDeg?: number;
   wavePeriodS?: number;
@@ -130,7 +140,7 @@ export interface MarineSnapshot {
   confidence: "high" | "medium" | "low" | "none";
 }
 
-export interface WeatherSnapshot {
+export interface WeatherSnapshot extends ConditionsMetadata {
   airTemperatureC?: number;
   apparentTemperatureC?: number;
   relativeHumidityPct?: number;
@@ -157,13 +167,18 @@ export interface FactorScore {
 }
 
 export interface RankedSpot extends CandidateSpot {
+  recommendationStatus?: "eligible" | "caution" | "unsuitable" | "unverified";
+  recommendationReasons?: string[];
+  conditionsStatus?: "adverse" | "unknown" | "no-adverse-signal";
+  scoreMeaning?: "heuristic-fit";
+  actionabilityLabel?: string;
   rank: number;
   score: number;
   summary: string;
   depth: DepthProfile;
   marine: MarineSnapshot;
   weather: WeatherSnapshot;
-  likelyFish: string[];
+  typicalSpecies?: string[];
   recommendedTechniques: string[];
   bait: string[];
   castingAdvice: string;
@@ -179,14 +194,14 @@ export interface RankedSpot extends CandidateSpot {
   breakdown: FactorScore[];
 }
 
-export interface CastRecommendation {
+export interface ApproximateZone {
   bearingDeg: number;
   direction: string;
-  distanceM: number;
-  target: Coordinates;
-  targetDepthM?: number;
-  rationale: string;
-  confidence: "high" | "medium" | "low" | "none";
+  distanceRangeM: [number, number];
+  depthRangeM: [number, number];
+  confidence: "low";
+  actionable: false;
+  label: string;
 }
 
 export interface PointAnalysis {
@@ -196,10 +211,17 @@ export interface PointAnalysis {
   waterDistanceM: number;
   waterBearingDeg?: number;
   gpsAccuracyM?: number;
-  castRecommendation?: CastRecommendation;
+  waterFound?: boolean;
+  requiresRelocation?: boolean;
+  standingPointStatus?: "unverified" | "not-applicable";
+  techniqueRangeM?: [number, number];
+  spatialResolutionM?: number;
+  approximateZone?: ApproximateZone;
 }
 
 export interface SpotsApiResponse {
+  conditionsScope?: "regional" | "point";
+  conditionsAt?: string;
   mode?: SpotSearchMode;
   scanId?: string;
   intent: SearchIntent;
@@ -226,6 +248,7 @@ export interface DataFetchResult<T> {
 }
 
 export interface ApiUser {
+  role: "admin" | "user";
   id: string;
   username: string;
   displayName: string;
@@ -240,6 +263,8 @@ export interface TripFishRecord {
   count: number;
   weightKg?: number;
   lengthCm?: number;
+  weightBasis?: "individual" | "total" | "average" | "unknown";
+  lengthBasis?: "individual" | "average" | "unknown";
   bait?: string;
   released: boolean;
   notes?: string;
@@ -248,6 +273,9 @@ export interface TripFishRecord {
 
 export type TripVisibility = "private" | "public";
 export type TripStatus = "active" | "completed";
+export type RecordingMode = "live" | "historical";
+export type TripOutcome = "not-recorded" | "zero" | "recorded";
+export type PublicLocationPrecision = "approximate" | "exact";
 
 export interface TripMedia {
   id: string;
@@ -263,6 +291,15 @@ export interface TripMedia {
 }
 
 export interface SavedFishingTrip {
+  recordingMode: RecordingMode;
+  endedAt: string | null;
+  outcome: TripOutcome;
+  fishingMinutes: number | null;
+  anglerCount: number | null;
+  conditionsRecordedAt: string | null;
+  publicLocationPrecision: PublicLocationPrecision;
+  shareNotes: boolean;
+  sharedMediaIds: string[];
   id: string;
   userId: string;
   username: string;
@@ -292,6 +329,15 @@ export interface SavedFishingTrip {
 }
 
 export interface CreateTripInput {
+  recordingMode: RecordingMode;
+  endedAt: string | null;
+  outcome: TripOutcome;
+  fishingMinutes: number | null;
+  anglerCount: number | null;
+  conditionsRecordedAt: string | null;
+  publicLocationPrecision: PublicLocationPrecision;
+  shareNotes: boolean;
+  sharedMediaIds: string[];
   tripDate: string;
   technique: TechniqueId;
   techniqueLabel: string;
@@ -311,6 +357,14 @@ export interface CreateTripInput {
 }
 
 export interface UpdateTripInput {
+  endedAt?: string | null;
+  outcome?: TripOutcome;
+  fishingMinutes?: number | null;
+  anglerCount?: number | null;
+  conditionsRecordedAt?: string | null;
+  publicLocationPrecision?: PublicLocationPrecision;
+  shareNotes?: boolean;
+  sharedMediaIds?: string[];
   visibility?: TripVisibility;
   tripDate?: string;
   notes?: string;
@@ -343,4 +397,48 @@ export interface ScanSummary {
   resultLimit: number;
   resultCount: number;
   createdAt: string;
+  mode?: SpotSearchMode;
+}
+
+export interface SavedPlace extends Coordinates {
+  id: string;
+  name: string;
+  technique: TechniqueId;
+  notes: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SavedScan extends ScanSummary {
+  response: SpotsApiResponse;
+  request: Partial<SpotsApiRequest> & { query?: string };
+}
+
+export interface TripDestination extends Coordinates {
+  name: string;
+  technique: TechniqueId;
+  spot?: RankedSpot;
+  conditionsAt?: string;
+}
+
+export interface PersonalInsights {
+  summary: {
+    completedTrips: number;
+    knownOutcomeTrips: number;
+    fishCount: number;
+    effortHours: number;
+    anglerHours: number;
+    effortTrips: number;
+    catchPerAnglerHour: number | null;
+  };
+  groups: Array<{
+    technique: TechniqueId;
+    locationName: string;
+    tripCount: number;
+    knownOutcomeTrips: number;
+    fishCount: number;
+    effortTrips: number;
+    anglerHours: number;
+    catchPerAnglerHour: number | null;
+  }>;
 }
