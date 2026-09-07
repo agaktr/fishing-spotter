@@ -91,6 +91,8 @@ function harness(existingLocalStorage) {
 
 test("journal hides draft management, recovers forms quietly and restricts editing to owners", async () => {
   const h = harness();
+  const conditionsContext = { exports: {}, require: id => id === "react/jsx-runtime" ? jsxRuntime : h.drafts };
+  vm.runInNewContext(ts.transpileModule(await readFile(new URL("../../components/TripConditions.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText, conditionsContext);
   const context = { exports: {}, require: (id) => {
     if (id === "react") return React;
     if (id === "react/jsx-runtime") return jsxRuntime;
@@ -100,6 +102,7 @@ test("journal hides draft management, recovers forms quietly and restricts editi
     if (id === "@/lib/client/tripHistory") return historyContext.exports;
     if (id === "@/lib/techniqueProfiles") return { TECHNIQUE_PROFILES: {} };
     if (id === "./TripMediaGallery") return { TripMediaGallery: ({ images }) => React.createElement("span", null, `${images.length} images`) };
+    if (id === "./TripConditions") return conditionsContext.exports;
     throw new Error(`Unexpected module: ${id}`);
   } };
   vm.runInNewContext(compiledJournal, context);
@@ -157,12 +160,20 @@ test("journal hides draft management, recovers forms quietly and restricts editi
   const spot = { weather: { validAt: "2025-06-01T10:00:00Z", fetchedAt: "2025-06-01T09:00:00Z", sourceCoordinates: { lat: 36.123, lon: 22.456 }, temporalMode: "forecast" }, marine: { validAt: "2025-06-01T11:00:00Z", fetchedAt: "2025-06-01T09:30:00Z", sourceCoordinates: { lat: 36.789, lon: 22.987 }, temporalMode: "historical" } };
   h.drafts.writeDraft(user.id, subject, { ...draft, destination: { ...destination, spot } });
   const metadataHtml = journal({ destination });
-  for (const text of ["Ήλιος και σύννεφο", "Θαλάσσια κύματα", "36.123, 22.456", "36.789, 22.987", ...Object.values(spot).flatMap((item) => [h.drafts.displayDate(item.validAt), h.drafts.displayDate(item.fetchedAt)])]) assert.ok(metadataHtml.includes(text), text);
+  for (const text of ["Θερμ. αέρα", "Ύψος κύματος", "Πηγές δεδομένων", "36.123, 22.456", "36.789, 22.987", ...Object.values(spot).flatMap((item) => [h.drafts.displayDate(item.validAt), h.drafts.displayDate(item.fetchedAt)])]) assert.ok(metadataHtml.includes(text), text);
   h.drafts.writeDraft(user.id, subject, { ...draft, destination: { ...destination, spot: { weather: { sourceSnapshot: spot.weather }, marine: {} } } });
   const legacyMetadata = journal({ destination });
   assert.ok(legacyMetadata.includes("36.123, 22.456"));
-  assert.ok(legacyMetadata.includes("χωρίς χρονική αντιστοίχιση"));
-  assert.ok(legacyMetadata.includes("Μη διαθέσιμες"));
+  assert.ok(legacyMetadata.includes("δεν αντιστοιχεί χρονικά"));
+  assert.ok(legacyMetadata.includes("Μη διαθέσιμο"));
+  const numericSpot = { weather: { airTemperatureC: 18.7 }, marine: { waveHeightM: 0.45 } };
+  h.drafts.writeDraft(user.id, subject, { ...draft, destination: { ...destination, spot: numericSpot } });
+  const pendingHtml = journal({ destination });
+  assert.ok(pendingHtml.includes("18,7") && pendingHtml.includes("0,45"));
+  const storedHtml = journal({ selectedTripId: trip.id, destination: { ...destination, spot: numericSpot }, trips: [{ ...trip, weather: { airTemperatureC: 24.6 }, marine: { waveHeightM: 0 } }] });
+  assert.ok(storedHtml.includes("24,6"));
+  assert.ok(!storedHtml.includes("18,7") && !storedHtml.includes("0,45"), "Stored trips never fall back to a different destination snapshot");
+  assert.equal((storedHtml.match(/aria-label="Συνθήκες εξόρμησης"/g) ?? []).length, 1);
 });
 
 test("trip layers are unclustered and all nearby photo fans render without zoom or source-feature gating", () => {

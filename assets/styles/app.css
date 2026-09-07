@@ -90,6 +90,22 @@ input, select, textarea { max-width: 100%; min-width: 0; }
 button, a, input, select, textarea { touch-action: manipulation; }
 button:focus-visible, a:focus-visible { outline: 3px solid #19a7ce; outline-offset: 2px; }
 .workflow-panel [hidden] { display: none; }
+
+.trip-journal { padding-bottom: max(1rem, env(safe-area-inset-bottom)); scroll-padding-top: 5rem; }
+.trip-journal-header { position: sticky; top: -1rem; z-index: 2; margin: -1rem -1rem 0; padding: 1rem; background: white; border-bottom: 1px solid #e2e8f0; }
+.trip-conditions { container-type: inline-size; }
+.trip-conditions-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.5rem; }
+.trip-condition { min-width: 0; padding: 0.625rem; border: 1px solid #e2e8f0; border-radius: 0.75rem; background: #f5f9fa; }
+.trip-condition dt { display: flex; align-items: center; gap: 0.375rem; font-size: 0.75rem; font-weight: 700; line-height: 1.25rem; color: #475569; }
+.trip-condition dd { margin: 0.25rem 0 0 1.625rem; overflow-wrap: anywhere; }
+.trip-condition .ui-help { margin-left: 1.625rem; }
+.trip-condition:last-child:nth-child(odd) { grid-column: 1 / -1; }
+@container (max-width: 289px) {
+  .trip-conditions-grid { grid-template-columns: minmax(0, 1fr); }
+  .trip-condition { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 0.25rem 0.5rem; }
+  .trip-condition dd { margin: 0; text-align: right; }
+  .trip-condition .ui-help { grid-column: 1 / -1; }
+}
 .workflow-toolbar { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: thin; }
 .workflow-toolbar > button { flex-shrink: 0; }
 @media (max-width: 639px) {

@@ -5,6 +5,7 @@ import { displayDate, draftKey, localDateTime, removeDraft, usePersistentDraft, 
 import { draftAfterSave, EMPTY_FISH, initialDraft, positiveNumber, resolveSelectedTrip, tripUpdateFromDraft, type FishDraft, type TripDraft } from "@/lib/client/tripDraft";
 import { TECHNIQUE_PROFILES } from "@/lib/techniqueProfiles";
 import { TripMediaGallery } from "./TripMediaGallery";
+import { TripConditions } from "./TripConditions";
 import { EMPTY_TRIP_FILTERS, matchesTripFilters, tripDurationMinutes, tripSpecies } from "@/lib/client/tripHistory";
 
 export function tripOutcomeLabel(trip: SavedFishingTrip): string {
@@ -36,7 +37,7 @@ export function TripJournal({ user, trips, activeTrip, destination, selectedTrip
     finally { setBusy(false); }
   }
   return <section className="workflow-panel trip-journal" aria-label="Ημερολόγιο εξορμήσεων">
-    <div className="flex items-start justify-between gap-3"><div><p className="ui-eyebrow">Προσωπικό ημερολόγιο</p><h2 className="mt-1 text-xl font-black">Εξορμήσεις</h2></div><button className="ui-close" aria-label="Κλείσιμο ημερολογίου" onClick={onClose}>x</button></div>
+    <div className="trip-journal-header flex items-start justify-between gap-3"><div><p className="ui-eyebrow">Προσωπικό ημερολόγιο</p><h2 className="mt-1 text-xl font-black">Εξορμήσεις</h2></div><button className="ui-close shrink-0" aria-label="Κλείσιμο ημερολογίου" onClick={onClose}>x</button></div>
     {!user && <div className="ui-notice mt-4"><p>Συνδέσου για τις δικές σου εξορμήσεις. Το επιλεγμένο σημείο θα διατηρηθεί.</p><button className="ui-primary mt-3" onClick={onLogin}>Σύνδεση / ενεργοποίηση</button></div>}
     {error && <p role="alert" className="ui-error mt-3">{error}</p>}
     {editable && editingTripId === selected?.id && <button className="ui-secondary mt-4" onClick={() => setEditingTripId(undefined)}>Προβολή αποθηκευμένων στοιχείων</button>}
@@ -92,7 +93,7 @@ function TripDetails({ trip }: { trip: SavedFishingTrip }) {
     <p className="ui-help">{trip.visibility === "public" ? `Κοινοποιημένη · ${trip.publicLocationPrecision === "exact" ? "ακριβές στίγμα" : "προσεγγιστική περιοχή"}` : "Μόνο εγώ"}</p>
     <p className="ui-help">Πραγματική λήξη: {displayDate(trip.endedAt)}. Καταχώριση ολοκλήρωσης: {displayDate(trip.completedAt)}.</p>
     {(trip.fishingMinutes != null || trip.anglerCount != null) && <p className="ui-help">Λεπτά ψαρέματος: {trip.fishingMinutes ?? "Άγνωστα"} · Ψαράδες: {trip.anglerCount ?? "Άγνωστοι"}</p>}
-    {trip.conditionsLabel && <p className="ui-help">Αποθηκευμένο στιγμιότυπο, όχι τρέχουσες συνθήκες: {trip.conditionsLabel} · {displayDate(trip.conditionsRecordedAt)}</p>}
+    <TripConditions weather={trip.weather} marine={trip.marine} recordedAt={trip.conditionsRecordedAt} label={trip.conditionsLabel} />
     {trip.notes && <p className="whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-2 text-xs">{trip.notes}</p>}
     <TripMediaGallery images={trip.images} />
     {trip.fishRecords.map((fish) => <div key={fish.id} className="break-words border-t border-slate-100 pt-2"><p className="text-xs font-bold">{fish.count}x {fish.species} · {fishMetrics(fish)}</p>{fish.notes && <p className="ui-help whitespace-pre-wrap">{fish.notes}</p>}<TripMediaGallery images={fish.images} /></div>)}
@@ -241,30 +242,9 @@ function TripEditor({ user, subject, trip, destination, activeTrip, onUpdated, o
       <div className="grid grid-cols-2 gap-2"><label className="ui-label">Λεπτά πραγματικού ψαρέματος<input type="number" min="1" step="1" placeholder="Άγνωστα" className="ui-input" value={value.fishingMinutes} onChange={(e) => change({ fishingMinutes: e.target.value })} /></label><label className="ui-label">Αριθμός ψαράδων<input type="number" min="1" max="100" step="1" placeholder="Άγνωστος" className="ui-input" value={value.anglerCount} onChange={(e) => change({ anglerCount: e.target.value })} /></label></div>
       <p className="ui-help">Προαιρετική προσπάθεια. Δεν συμπεραίνεται από τη διάρκεια της εξόρμησης ούτε θεωρείται αυτόματα ένας ψαράς.</p>
       {(!finished || !value.endedAt) && <p className="ui-help">Τα λεπτά και οι ψαράδες διατηρούνται μόνο στη συσκευή μέχρι να δηλώσεις πραγματική λήξη. Κενό σημαίνει άγνωστο, όχι μηδέν.</p>}
-      <label className="ui-label">Ώρα καταγραφής συνθηκών, αν είναι γνωστή<input type="datetime-local" step="1" max={localDateTime(new Date().toISOString(), true)} className="ui-input" value={value.conditionsRecordedAt} onChange={(e) => change({ conditionsRecordedAt: e.target.value })} /></label>
-      <section aria-label="Πηγή και χρόνος συνθηκών" className="space-y-2">
-        <h4 className="ui-eyebrow">Πηγή και χρόνος συνθηκών</h4>
-        <p className="ui-help">{trip ? "Αποθηκευμένο στιγμιότυπο, όχι τρέχουσες συνθήκες." : "Στοιχεία επιλεγμένου σημείου, όχι επιτόπια παρατήρηση. Παλιές συνθήκες και προγνώσεις δεν αποθηκεύονται ως παρατήρηση."}</p>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {(["weather", "marine"] as const).map((kind) => {
-            const snapshot = trip ? trip[kind] : point?.spot?.[kind];
-            const metadata = snapshot?.sourceSnapshot ?? snapshot;
-            const label = kind === "weather" ? "Καιρός" : "Θάλασσα";
-            return <article key={kind} aria-label={label} className="min-w-0 space-y-2 rounded-2xl border border-slate-200 bg-slate-50 p-3">
-              <h5 className="flex items-center gap-2 text-sm font-black"><svg viewBox="0 0 24 24" className="h-6 w-6 shrink-0 text-tide" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" role="img" aria-label={kind === "weather" ? "Ήλιος και σύννεφο" : "Θαλάσσια κύματα"}>
-                {kind === "weather" ? <><circle cx="8" cy="8" r="3" /><path d="M8 1v2M1 8h2M3 3l1.5 1.5M13 3l-1.5 1.5M16 19H7a4 4 0 1 1 1-7.9A5 5 0 1 1 16 19Z" /></> : <path d="M2 6q2-3 5 0t5 0t5 0t5 0M2 12q2-3 5 0t5 0t5 0t5 0M2 18q2-3 5 0t5 0t5 0t5 0" />}
-              </svg>{label}</h5>
-              {snapshot?.sourceSnapshot && <p className="ui-help">Αρχική πηγή χωρίς χρονική αντιστοίχιση. Οι συνθήκες εξόρμησης είναι άγνωστες.</p>}
-              <dl className="ui-help space-y-2 break-words">
-                <div><dt className="font-bold">Συντεταγμένες πηγής</dt><dd>{metadata?.sourceCoordinates ? `${metadata.sourceCoordinates.lat.toFixed(3)}, ${metadata.sourceCoordinates.lon.toFixed(3)}` : "Μη διαθέσιμες"}</dd></div>
-                <div><dt className="font-bold">Ισχύει</dt><dd>{displayDate(metadata?.validAt)}</dd></div>
-                <div><dt className="font-bold">Λήψη</dt><dd>{displayDate(metadata?.fetchedAt)}</dd></div>
-                <div><dt className="font-bold">Χρονική κάλυψη</dt><dd>{metadata?.temporalMode === "forecast" ? "Πρόγνωση, όχι παρατήρηση" : metadata?.temporalMode === "current" ? "Τρέχον μοντέλο, όχι επιτόπια μέτρηση" : metadata?.temporalMode === "historical" ? "Ιστορικά δεδομένα" : metadata?.temporalMode ?? "Άγνωστη"}</dd></div>
-              </dl>
-            </article>;
-          })}
-        </div>
-      </section>
+      <TripConditions weather={trip ? trip.weather : point?.spot?.weather} marine={trip ? trip.marine : point?.spot?.marine} pending={!trip} label={trip?.conditionsLabel}>
+        <label className="ui-label">Ώρα καταγραφής συνθηκών, αν είναι γνωστή<input type="datetime-local" step="1" max={localDateTime(new Date().toISOString(), true)} className="ui-input" value={value.conditionsRecordedAt} onChange={(e) => change({ conditionsRecordedAt: e.target.value })} /></label>
+      </TripConditions>
       <label className="ui-label">Σημειώσεις εξόρμησης<textarea rows={4} className="ui-input" value={value.notes} onChange={(e) => change({ notes: e.target.value })} /></label>
       {value.outcome !== "zero" && <div className="space-y-3 rounded-2xl border border-slate-200 bg-slate-50 p-3"><h4 className="font-black">{value.fish.id ? "Διόρθωση ψαριού, ίδιο ID και εικόνες" : "Προσθήκη ψαριού / ομοιογενούς ομάδας"}</h4>
         <label className="ui-label">Είδος<input className="ui-input" value={value.fish.species} onChange={(e) => changeFish({ species: e.target.value })} /></label>
