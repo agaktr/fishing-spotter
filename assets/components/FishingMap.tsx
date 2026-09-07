@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
 import type { FeatureCollection, LineString, Point, Polygon } from "geojson";
 import type { Coordinates, GeocodedLocation, PointAnalysis, RankedSpot, SpotSearchMode } from "@/lib/types";
-import { round } from "@/lib/geo";
+import { distanceKm, formatDistanceKm, round } from "@/lib/geo";
 
 export type MapBaseLayer = "street" | "satellite" | "terrain";
 
@@ -17,6 +17,8 @@ interface FishingMapProps {
   loading: boolean;
   baseLayer: MapBaseLayer;
   depthVisible: boolean;
+  recenterKey?: number;
+  onMeasureStart?: () => void;
   pickedPoint?: Coordinates;
   mode?: SpotSearchMode;
   pointAnalysis?: PointAnalysis;
@@ -44,7 +46,11 @@ const EMPTY_COLLECTION: MapFeatureCollection = {
   features: [],
 };
 
-export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, depthVisible, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
+export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, depthVisible, recenterKey = 0, onMeasureStart, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
+  const [measuring, setMeasuring] = useState(false);
+  const [measurePoints, setMeasurePoints] = useState<Coordinates[]>([]);
+  const measuringRef = useRef(false);
+  const measurementLabel = measurePoints.length === 2 ? formatDistanceKm(distanceKm(measurePoints[0], measurePoints[1])).replace(/(km|m)$/, " $1") : undefined;
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<MapLibreMap | null>(null);
   const centerMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -53,7 +59,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
   const onPickPointRef = useRef(onPickPoint);
   const lastFitKeyRef = useRef<string | undefined>(undefined);
   const lastTripFitKeyRef = useRef<string | undefined>(undefined);
-  const lastPickedFitKeyRef = useRef<string | undefined>(undefined);
+  const lastRecenterKeyRef = useRef(recenterKey);
 
   useEffect(() => {
     onSelectSpotRef.current = onSelectSpot;
@@ -131,10 +137,15 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       center: [22.56, 36.76],
       zoom: 10,
       attributionControl: { compact: true },
+      locale: {
+        "NavigationControl.ZoomIn": "Μεγέθυνση",
+        "NavigationControl.ZoomOut": "Σμίκρυνση",
+        "NavigationControl.ResetBearing": "Επαναφορά στον βορρά",
+      },
     });
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
-    map.addControl(new maplibregl.ScaleControl({ maxWidth: 120, unit: "metric" }), "bottom-right");
+    map.addControl(new maplibregl.ScaleControl({ maxWidth: 100, unit: "metric" }), "top-left");
 
     map.on("load", () => {
       map.addSource("radius", {
@@ -321,10 +332,10 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         layout: {
           "text-field": ["get", "label"],
           "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
-          "text-size": 11,
+          "text-size": 14,
           "text-offset": [0, 1.35],
           "text-anchor": "top",
-          "text-allow-overlap": true,
+          "text-allow-overlap": false,
         },
         paint: {
           "text-color": "#09202a",
@@ -366,7 +377,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         layout: {
           "text-field": ["get", "label"],
           "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
-          "text-size": 11,
+          "text-size": 14,
           "text-offset": [0, 1.45],
           "text-anchor": "top",
           "text-allow-overlap": false,
@@ -449,7 +460,13 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         },
       });
 
+      map.addSource("measurement", { type: "geojson", data: EMPTY_COLLECTION });
+      map.addLayer({ id: "measurement-line", type: "line", source: "measurement", filter: ["==", ["geometry-type"], "LineString"], paint: { "line-color": "#fbbf24", "line-width": 4, "line-dasharray": [2, 2] } });
+      map.addLayer({ id: "measurement-endpoints", type: "circle", source: "measurement", filter: ["==", ["geometry-type"], "Point"], paint: { "circle-radius": 7, "circle-color": "#fbbf24", "circle-stroke-color": "#09202a", "circle-stroke-width": 3 } });
+      map.addLayer({ id: "measurement-label", type: "symbol", source: "measurement", filter: ["==", ["geometry-type"], "LineString"], layout: { "symbol-placement": "line-center", "text-field": ["get", "label"], "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"], "text-size": 16, "text-allow-overlap": true, "text-offset": [0, -1] }, paint: { "text-color": "#09202a", "text-halo-color": "#ffffff", "text-halo-width": 3 } });
+
       const selectSpot = (event: maplibregl.MapLayerMouseEvent) => {
+        if (measuringRef.current) return;
         const feature = event.features?.[0];
         const id = feature?.properties?.id;
         if (typeof id === "string") {
@@ -460,16 +477,23 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       map.on("click", "spots-circle", selectSpot);
       map.on("click", "spots-rank", selectSpot);
       const selectTrip = (event: maplibregl.MapLayerMouseEvent) => {
+        if (measuringRef.current) return;
         const id = event.features?.[0]?.properties?.id;
         if (typeof id === "string") {
           onSelectTripRef.current?.(id);
         }
       };
+      map.on("click", "trips-halo", selectTrip);
       map.on("click", "trips-circle", selectTrip);
       map.on("click", "trips-label", selectTrip);
 
       map.on("click", (event) => {
-        const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "point-analysis-points", "point-analysis-labels", "trips-circle", "trips-label"] });
+        if (measuringRef.current) {
+          const point = { lat: event.lngLat.lat, lon: event.lngLat.lng };
+          setMeasurePoints((points) => points.length < 2 ? [...points, point] : points);
+          return;
+        }
+        const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "point-analysis-points", "point-analysis-labels", "trips-halo", "trips-circle", "trips-label"] });
         if (existingFeatures.length > 0) {
           return;
         }
@@ -478,20 +502,22 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       });
 
       const showPointer = () => {
-        map.getCanvas().style.cursor = "pointer";
+        map.getCanvas().style.cursor = measuringRef.current ? "crosshair" : "pointer";
       };
 
       const hidePointer = () => {
-        map.getCanvas().style.cursor = "";
+        map.getCanvas().style.cursor = measuringRef.current ? "crosshair" : "";
       };
 
       map.on("mouseenter", "spots-circle", showPointer);
       map.on("mouseenter", "spots-rank", showPointer);
       map.on("mouseenter", "trips-circle", showPointer);
+      map.on("mouseenter", "trips-halo", showPointer);
       map.on("mouseenter", "trips-label", showPointer);
       map.on("mouseleave", "spots-circle", hidePointer);
       map.on("mouseleave", "spots-rank", hidePointer);
       map.on("mouseleave", "trips-circle", hidePointer);
+      map.on("mouseleave", "trips-halo", hidePointer);
       map.on("mouseleave", "trips-label", hidePointer);
     });
 
@@ -514,7 +540,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
     const update = () => {
       for (const layerId of ["osm", "satellite", "terrain"]) {
         if (map.getLayer(layerId)) {
-          map.setLayoutProperty(layerId, "visibility", layerId === baseLayer ? "visible" : "none");
+          map.setLayoutProperty(layerId, "visibility", layerId === (baseLayer === "street" ? "osm" : baseLayer) ? "visible" : "none");
         }
       }
     };
@@ -560,11 +586,6 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
     const update = () => {
       const source = map.getSource("picked-point") as maplibregl.GeoJSONSource | undefined;
       source?.setData(toPickedPointCollection(pointAnalysis ? undefined : pickedPoint));
-      const key = pickedPoint ? `${pickedPoint.lat}:${pickedPoint.lon}` : undefined;
-      if (pickedPoint && !pointAnalysis && key !== lastPickedFitKeyRef.current) {
-        map.flyTo({ center: [pickedPoint.lon, pickedPoint.lat], zoom: 13, duration: 500 });
-      }
-      lastPickedFitKeyRef.current = key;
     };
 
     if (map.getSource("picked-point")) {
@@ -588,13 +609,11 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       const source = map.getSource("trips") as maplibregl.GeoJSONSource | undefined;
       source?.setData(toTripCollection(validTrips));
 
-      if (!location && !pickedPoint && validTrips.length > 0) {
-        const fitKey = tripFitKey(validTrips);
-        if (lastTripFitKeyRef.current !== fitKey) {
-          fitTripMarkers(map, validTrips);
-          lastTripFitKeyRef.current = fitKey;
-        }
+      const fitKey = tripFitKey(validTrips);
+      if (!location && !pickedPoint && validTrips.length > 0 && lastTripFitKeyRef.current !== fitKey) {
+        fitTripMarkers(map, validTrips);
       }
+      lastTripFitKeyRef.current = fitKey;
     };
 
     if (map.getSource("trips")) {
@@ -607,6 +626,27 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
     }
   }, [location, pickedPoint, trips]);
 
+  useEffect(() => {
+    const recenterRequested = recenterKey !== lastRecenterKeyRef.current;
+    lastRecenterKeyRef.current = recenterKey;
+    // Clearing a selection must not recenter on the fallback pin or location.
+    if (!selectedSpotId && !recenterRequested) return;
+    const map = mapRef.current;
+    const point = spots.find((spot) => spot.id === selectedSpotId) ?? pickedPoint ?? location;
+    if (!map || !point) return;
+    const update = () => {
+      // Center in the unobscured map area, not underneath the active sheet.
+      const panel = containerRef.current?.closest("main")?.querySelector<HTMLElement>(".search-panel, .results-panel, .map-analysis .workflow-panel");
+      const bounds = panel?.getBoundingClientRect();
+      const desktop = map.getContainer().clientWidth >= 640;
+      map.easeTo({ center: [point.lon, point.lat], offset: bounds ? desktop ? [-bounds.width / 2, 0] : [0, -bounds.height / 2] : [0, 0], duration: 500 });
+    };
+    if (map.getSource("spots")) update();
+    else map.once("load", update);
+    return () => { map.off("load", update); };
+  }, [selectedSpotId, recenterKey]);
+
+  // New result framing takes precedence over selection recentering.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) {
@@ -688,9 +728,39 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
     }
   }, [location, mode, pointAnalysis, radiusKm, selectedSpotId, spots]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const update = () => {
+      const features: MapFeatureCollection["features"] = measurePoints.map((point) => pointFeature(point, "measurement", ""));
+      if (measurementLabel) features.push({ type: "Feature", geometry: { type: "LineString", coordinates: measurePoints.map((point) => [point.lon, point.lat]) }, properties: { label: measurementLabel } });
+      (map.getSource("measurement") as maplibregl.GeoJSONSource | undefined)?.setData({ type: "FeatureCollection", features });
+    };
+    if (map.getSource("measurement")) update();
+    else map.once("load", update);
+    return () => { map.off("load", update); };
+  }, [measurePoints, measurementLabel]);
+
+  function toggleMeasurement(active: boolean) {
+    measuringRef.current = active;
+    setMeasuring(active);
+    setMeasurePoints([]);
+    const map = mapRef.current;
+    if (map) {
+      map.getCanvas().style.cursor = active ? "crosshair" : "";
+      if (active) map.doubleClickZoom.disable();
+      else map.doubleClickZoom.enable();
+    }
+    if (active) onMeasureStart?.();
+  }
+
   return (
     <div className="relative h-full min-h-[100svh] w-full">
       <div ref={containerRef} className="h-full w-full" aria-label="Χάρτης ψαρότοπων" />
+      <div className="measure-tools" data-active={measuring} aria-label="Μέτρηση απόστασης">
+        <button className={measuring ? "ui-primary" : "ui-secondary"} aria-pressed={measuring} onClick={() => toggleMeasurement(!measuring)}>{measuring ? "Έξοδος μέτρησης" : "Μέτρηση"}</button>
+        {measuring && <div className="measure-status"><p role="status" aria-live="polite">{measurementLabel ? `Απόσταση: ${measurementLabel}` : measurePoints.length ? "Πάτησε το δεύτερο σημείο" : "Πάτησε το πρώτο σημείο"}</p><p className="ui-help">Ευθεία απόσταση, όχι διαδρομή ή οδηγία πλοήγησης.</p><button className="ui-secondary" disabled={!measurePoints.length} onClick={() => setMeasurePoints([])}>Καθαρισμός</button></div>}
+      </div>
       {loading && (
         <div className="absolute inset-0 grid place-items-center bg-ink/20 backdrop-blur-[2px]">
           <div className="rounded-3xl bg-white px-6 py-4 text-center shadow-glow">
@@ -1008,7 +1078,7 @@ function toDepthProfileCollection(selectedSpot?: RankedSpot): MapFeatureCollecti
         coordinates: [point.lon, point.lat],
       },
       properties: {
-        label: `Δείγμα ~${round(point.depthM ?? 0, 0)}μ`,
+        label: `Βάθος ~${round(point.depthM ?? 0, 0)} μ`,
         distanceM: point.distanceM,
         depthM: round(point.depthM ?? 0, 0),
       },

@@ -25,6 +25,9 @@ const compiledAnalysis = ts.transpileModule(await readFile(new URL("../../compon
 const compiledMap = ts.transpileModule(await readFile(new URL("../../components/FishingMap.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
+const compiledJournal = ts.transpileModule(await readFile(new URL("../../components/TripJournal.tsx", import.meta.url), "utf8"), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
+}).outputText;
 const user = { id: "owner", username: "owner", displayName: "Owner", role: "user", active: true };
 const session = { user, token: "test-bearer-not-a-real-secret", expiresAt: "2099-01-01T00:00:00Z" };
 
@@ -82,6 +85,100 @@ function harness(existingLocalStorage) {
     login: async (nextUser = user, remember = false) => { replies.push({ payload: { ...session, user: nextUser, token: `${session.token}:${nextUser.id}:${requests.length}` } }); return api.authenticate({ username: nextUser.username, password: "test-password" }, remember); },
   };
 }
+
+test("selected map trip shows only its details and offers editing only to its owner", () => {
+  const h = harness();
+  const context = { exports: {}, require: (id) => {
+    if (id === "react") return React;
+    if (id === "react/jsx-runtime") return jsxRuntime;
+    if (id === "@/lib/client/api") return h.api;
+    if (id === "@/lib/client/drafts") return h.drafts;
+    if (id === "@/lib/client/tripDraft") return h.tripDraft;
+    if (id === "@/lib/techniqueProfiles") return {};
+    if (id === "./TripMediaGallery") return { TripMediaGallery: ({ images }) => React.createElement("span", null, `${images.length} images`) };
+    throw new Error(`Unexpected module: ${id}`);
+  } };
+  vm.runInNewContext(compiledJournal, context);
+  const trip = { id: "selected", userId: "owner", username: "owner", locationName: "Selected reef", techniqueLabel: "Spinning", tripDate: "2025-06-01T10:00:00Z", endedAt: "2025-06-01T12:00:00Z", status: "completed", recordingMode: "historical", visibility: "public", publicLocationPrecision: "approximate", outcome: "recorded", notes: "Shared trip notes", fishingMinutes: 90, anglerCount: 2, images: [], fishRecords: [{ id: "fish", species: "Sea bass", count: 3, weightKg: 1.5, weightBasis: "total", released: true, notes: "Shared catch notes", images: [] }] };
+  const render = (viewer, selected = trip) => renderToStaticMarkup(React.createElement(context.exports.TripJournal, {
+    user: viewer, trips: [{ ...trip, id: "unrelated", locationName: "Unrelated reef" }, selected], selectedTripId: selected.id, activeTrip: null,
+  }));
+  for (const viewer of [undefined, { ...user, id: "other" }, user]) {
+    const html = render(viewer);
+    for (const text of ["Selected reef", "Shared trip notes", "Shared catch notes", "3x Sea bass", "1.5kg", "90", h.drafts.displayDate(trip.tripDate)]) assert.ok(html.includes(text), text);
+    assert.ok(!html.includes("Unrelated reef"));
+    assert.equal(html.includes("Επεξεργασία / πρόχειρο"), viewer?.id === trip.userId);
+    assert.ok(!html.includes("datetime-local"), "Details do not mount the editor or create a draft");
+    assert.ok(!html.includes("Διαγραφή"), "Read-only details have no delete action");
+  }
+  assert.ok(render(undefined, { ...trip, outcome: "zero", fishRecords: [] }).includes("0 ψάρια"));
+  assert.ok(render(undefined, { ...trip, outcome: "not-recorded", fishRecords: [] }).includes("Αποτέλεσμα μη καταγεγραμμένο"));
+});
+
+test("map pins and cleared results preserve camera; selection and explicit recenter preserve zoom", () => {
+  const refs = [], dependencies = [], pending = [], camera = [], data = [];
+  let refIndex = 0, effectIndex = 0, recenterKey = 0;
+  const map = {
+    getSource: (id) => ({ setData: (value) => data.push({ id, value }) }),
+    getLayer: () => true,
+    setLayoutProperty() {},
+    getContainer: () => ({ clientWidth: 1440, clientHeight: 1200 }),
+    easeTo: (options) => camera.push(options),
+    flyTo: (options) => camera.push(options),
+    fitBounds: (bounds, options) => camera.push(options),
+    off() {},
+  };
+  const context = { exports: {}, require: (id) => {
+    if (id === "react/jsx-runtime") return jsxRuntime;
+    if (id === "react") return {
+      useState: (value) => [value, () => {}],
+      useRef: (value) => {
+        const index = refIndex++;
+        return refs[index] ?? (refs[index] = { current: value });
+      },
+      useEffect: (effect, deps) => {
+        const index = effectIndex++;
+        if (!dependencies[index] || deps.some((value, i) => !Object.is(value, dependencies[index][i]))) pending.push(effect);
+        dependencies[index] = deps;
+      },
+    };
+    if (id === "maplibre-gl") return { default: { LngLatBounds: class { extend() {} } } };
+    if (id === "@/lib/geo") return { round: (value, digits) => Number(value.toFixed(digits)) };
+    throw new Error(`Unexpected module: ${id}`);
+  } };
+  vm.runInNewContext(compiledMap, context);
+  const render = (props = {}) => {
+    refIndex = 0; effectIndex = 0;
+    recenterKey = props.recenterKey ?? recenterKey;
+    context.exports.FishingMap({ spots: [], radiusKm: 25, baseLayer: "street", recenterKey, ...props });
+    refs[2].current = map; // Supply the map ref without mounting a WebGL canvas.
+    pending.splice(0).forEach((effect) => effect());
+  };
+  render();
+  render({ pickedPoint: { lat: 36.76, lon: 22.56 } });
+  assert.equal(camera.length, 0);
+  assert.equal(data.filter(({ id }) => id === "picked-point").at(-1).value.features.length, 1);
+  render({ selectedSpotId: "spot", spots: [{ id: "spot", lat: 36.77, lon: 22.57 }] });
+  assert.equal(camera.length, 1);
+  render({ pickedPoint: { lat: 36.78, lon: 22.58 } });
+  render();
+  assert.equal(camera.length, 1, "clearing selection, results and pin must not move camera");
+  render({ pickedPoint: { lat: 36.78, lon: 22.58 }, recenterKey: 1 });
+  assert.equal(camera.length, 2);
+  assert.deepEqual(Array.from(camera[1].center), [22.58, 36.78]);
+  assert.ok(camera.every((options) => !("zoom" in options)));
+  const point = { lat: 36.78, lon: 22.58 };
+  const trips = [{ ...point, id: "trip", fishCaught: [] }];
+  render({ pickedPoint: point, trips });
+  render({ trips });
+  assert.equal(camera.length, 2, "clearing the pin must not trigger a deferred trip fit");
+  render({ mode: "point", pointAnalysis: { requestedPoint: point, analyzedPoint: point },
+    selectedSpotId: "analysis", spots: [{ ...point, id: "analysis", depth: { hasNearbyWater: true, castingProfile: [] } }] });
+  assert.equal(camera.length, 4);
+  assert.equal(camera.at(-1).maxZoom, 16, "new analysis fitting must run after selection recentering");
+  render();
+  assert.equal(camera.length, 4, "clearing analysis must preserve the fitted camera");
+});
 
 test("password login and restoration use the bearer contract, not username restoration", async () => {
   const h = harness();

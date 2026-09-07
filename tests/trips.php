@@ -164,6 +164,8 @@ try {
     $check($public['spotId'] !== $base['spotId'] && $public['userId'] === '' && $public['username'] === '' && $public['displayName'] === '', 'Public source and personal identity hidden.');
     $check($public['notes'] === '' && !isset($public['fishRecords'][0]['notes']), 'Trip and fish coordinate notes are not shared by default.');
     $check($repository->getTrip($historicalTrip['id'], $other) === $public, 'Other authenticated users get the same public projection as anonymous users.');
+    $expect(fn () => $repository->updateTrip($historicalTrip['id'], $other, ['notes' => 'Map detail must remain read-only']), 404);
+    $check($repository->getTrip($historicalTrip['id'], $owner)['notes'] === $base['notes'], 'Viewing a public trip never grants edit permission.');
     $check($repository->getTrip($historicalTrip['id'], $owner)['lat'] === $base['lat'], 'Owner always sees original precision.');
     $check(count($repository->listTrips($owner, 'mine')) === 2 && count($repository->listTrips($other, 'visible')) === 1, 'Trip list visibility is owner scoped.');
     $check($repository->listTrips(null, 'public')[0] === $public, 'List and detail use identical public transformations.');

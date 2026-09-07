@@ -19,6 +19,7 @@ export function TripJournal({ user, trips, activeTrip, destination, selectedTrip
 }) {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
+  const [editingTripId, setEditingTripId] = useState<string>();
   const [, refreshDrafts] = useState(0);
   useEffect(() => {
     const changed = () => refreshDrafts((revision) => revision + 1);
@@ -30,6 +31,7 @@ export function TripJournal({ user, trips, activeTrip, destination, selectedTrip
   const editable = selected && selected.userId === user?.id ? selected : undefined;
   const subject = editable ? editable.id : !selectedTripId && destination ? `new:${destination.technique}:${destination.lat}:${destination.lon}` : undefined;
   const drafts = user ? listDrafts<TripDraft>(user.id) : [];
+  function editTrip(id: string) { setEditingTripId(id); onSelectTrip(id); }
   async function remove(trip: SavedFishingTrip) {
     if (!user || !window.confirm("Οριστική διαγραφή εξόρμησης, ψαριών και εικόνων;")) return;
     setBusy(true);
@@ -37,35 +39,51 @@ export function TripJournal({ user, trips, activeTrip, destination, selectedTrip
     catch (error) { setError(error instanceof Error ? error.message : "Η διαγραφή απέτυχε."); }
     finally { setBusy(false); }
   }
-  return <section className="workflow-panel" aria-label="Ημερολόγιο εξορμήσεων">
+  return <section className="workflow-panel trip-journal" aria-label="Ημερολόγιο εξορμήσεων">
     <div className="flex items-start justify-between gap-3"><div><p className="ui-eyebrow">Προσωπικό ημερολόγιο</p><h2 className="mt-1 text-xl font-black">Εξορμήσεις</h2></div><button className="ui-close" aria-label="Κλείσιμο ημερολογίου" onClick={onClose}>x</button></div>
     {!user && <div className="ui-notice mt-4"><p>Οι δημόσιες εξορμήσεις είναι ορατές χωρίς λογαριασμό. Συνδέσου για το ιδιωτικό ημερολόγιο. Το επιλεγμένο σημείο θα διατηρηθεί.</p><button className="ui-primary mt-3" onClick={onLogin}>Σύνδεση / ενεργοποίηση</button></div>}
     {error && <p role="alert" className="ui-error mt-3">{error}</p>}
-    {activeTrip && user && editable?.id !== activeTrip.id && <button className="ui-notice mt-4 w-full text-left" onClick={() => onSelectTrip(activeTrip.id)}>Συνέχεια ενεργής εξόρμησης: {activeTrip.locationName}. Νέα ζωντανή καταγραφή επιτρέπεται μετά την ολοκλήρωσή της. Ιστορική καταγραφή επιτρέπεται ανεξάρτητα.</button>}
+    {editable && editingTripId === selected?.id && <button className="ui-secondary mt-4" onClick={() => setEditingTripId(undefined)}>Προβολή αποθηκευμένων στοιχείων</button>}
+    {selected && (!editable || editingTripId !== selected.id) && <article className="mt-4 space-y-2 rounded-2xl border border-slate-200 p-3" aria-label="Λεπτομέρειες εξόρμησης">
+      <TripDetails trip={selected} />
+      <div className="flex flex-wrap gap-2">
+        {editable && editingTripId !== selected.id && <button className="ui-primary" onClick={() => editTrip(selected.id)}>Επεξεργασία / πρόχειρο</button>}
+        <button className="ui-secondary" onClick={() => { setEditingTripId(undefined); onSelectTrip(undefined); }}>Όλες οι εξορμήσεις</button>
+      </div>
+    </article>}
+    {activeTrip && user && !selected && <button className="ui-notice mt-4 w-full text-left" onClick={() => editTrip(activeTrip.id)}>Συνέχεια ενεργής εξόρμησης: {activeTrip.locationName}. Νέα ζωντανή καταγραφή επιτρέπεται μετά την ολοκλήρωσή της. Ιστορική καταγραφή επιτρέπεται ανεξάρτητα.</button>}
     {selected && !editable && <div className="ui-notice mt-4">Δημόσια καταγραφή. Η τοποθεσία {selected.publicLocationPrecision === "exact" ? "έχει κοινοποιηθεί με ακρίβεια" : "είναι προσεγγιστική, όχι το ακριβές σημείο του κατόχου"}.</div>}
-    {user && drafts.length > 0 && <section className="mt-4 space-y-3 rounded-2xl border border-tide/25 bg-tide/10 p-3" aria-label="Διατηρημένα πρόχειρα"><h3 className="font-black">Συνέχεια προχείρου ({drafts.length})</h3><p className="ui-help">Παραμένουν σε αυτή τη συσκευή μετά από κλείσιμο του browser ή λήξη συνεδρίας. Εμφανίζονται μόνο μετά την επαλήθευση του ίδιου λογαριασμού.</p>{drafts.map(({ subject: id, value }) => <div key={id} className="space-y-2"><p className="text-xs font-bold">{value.destination?.name ?? "Πρόχειρο εξόρμησης"} · {displayDate(value.tripDate)}</p><div className="flex flex-wrap gap-2"><button className="ui-secondary" onClick={() => { if (id.startsWith("new:")) { if (value.destination) onDestination(value.destination); } else onSelectTrip(id); }} disabled={id.startsWith("new:") && !value.destination}>Συνέχεια προχείρου</button><button className="ui-secondary" onClick={() => { if (window.confirm("Οριστική απόρριψη αυτού του τοπικού προχείρου;")) { removeDraft(user.id, id); if (id === subject) onClose(); } }}>Απόρριψη προχείρου</button></div></div>)}</section>}
-    {user && subject && (!selected || editable) ? <TripEditor key={draftKey(user.id, subject)} user={user} subject={subject} trip={editable} destination={destination} activeTrip={activeTrip} onUpdated={onUpdated} onSaved={(trip) => onSelectTrip(trip.id)} onClose={onClose} onRecheck={onRecheck} /> : !selected && <p className="ui-help mt-4">{selectedTripId ? "Φόρτωση επιλεγμένης εξόρμησης..." : "Διάλεξε σημείο στον χάρτη, στα αποτελέσματα ή στη βιβλιοθήκη για νέα εξόρμηση."}</p>}
-    <div className="mt-5 space-y-3 border-t border-slate-200 pt-4"><h3 className="ui-eyebrow">{user ? "Δικές μου και δημόσιες" : "Δημόσιες εξορμήσεις"} ({trips.length})</h3>
+    {user && !selected && drafts.length > 0 && <section className="mt-4 space-y-3 rounded-2xl border border-tide/25 bg-tide/10 p-3" aria-label="Διατηρημένα πρόχειρα"><h3 className="font-black">Συνέχεια προχείρου ({drafts.length})</h3><p className="ui-help">Παραμένουν σε αυτή τη συσκευή μετά από κλείσιμο του browser ή λήξη συνεδρίας. Εμφανίζονται μόνο μετά την επαλήθευση του ίδιου λογαριασμού.</p>{drafts.map(({ subject: id, value }) => <div key={id} className="space-y-2"><p className="text-xs font-bold">{value.destination?.name ?? "Πρόχειρο εξόρμησης"} · {displayDate(value.tripDate)}</p><div className="flex flex-wrap gap-2"><button className="ui-secondary" onClick={() => { if (id.startsWith("new:")) { if (value.destination) onDestination(value.destination); } else editTrip(id); }} disabled={id.startsWith("new:") && !value.destination}>Συνέχεια προχείρου</button><button className="ui-secondary" onClick={() => { if (window.confirm("Οριστική απόρριψη αυτού του τοπικού προχείρου;")) { removeDraft(user.id, id); if (id === subject) onClose(); } }}>Απόρριψη προχείρου</button></div></div>)}</section>}
+    {user && subject && (!selected || editable && editingTripId === selected.id) ? <TripEditor key={draftKey(user.id, subject)} user={user} subject={subject} trip={editable} destination={destination} activeTrip={activeTrip} onUpdated={onUpdated} onSaved={(trip) => editTrip(trip.id)} onClose={onClose} onRecheck={onRecheck} /> : !selected && <p className="ui-help mt-4">{selectedTripId ? "Φόρτωση επιλεγμένης εξόρμησης..." : "Διάλεξε σημείο στον χάρτη, στα αποτελέσματα ή στη βιβλιοθήκη για νέα εξόρμηση."}</p>}
+    {!selected && <div className="mt-5 space-y-3 border-t border-slate-200 pt-4"><h3 className="ui-eyebrow">{user ? "Δικές μου και δημόσιες" : "Δημόσιες εξορμήσεις"} ({trips.length})</h3>
       {!trips.length && <p className="ui-help">Δεν υπάρχουν διαθέσιμες εξορμήσεις.</p>}
       {trips.map((trip) => <article key={trip.id} className="space-y-2 rounded-2xl border border-slate-200 p-3">
-        <p className="ui-eyebrow">{trip.username ? `@${trip.username}` : "Δημόσια κοινοποίηση"} · {trip.techniqueLabel}</p><h3 className="font-black">{trip.locationName}</h3>
-        <p className="ui-help">{displayDate(trip.tripDate)} · {trip.status === "active" ? "Ενεργή, ιδιωτική" : "Ολοκληρωμένη"} · {trip.recordingMode === "historical" ? "Ιστορική καταχώριση" : "Ζωντανή καταγραφή"}</p>
-        <p className="text-xs font-bold">{tripOutcomeLabel(trip)}</p>
-        <p className="ui-help">{trip.visibility === "public" ? `Δημόσια · ${trip.publicLocationPrecision === "exact" ? "ακριβές στίγμα" : "προσεγγιστική τοποθεσία για το κοινό"}` : "Ιδιωτική"}</p>
-        <p className="ui-help">Πραγματική λήξη: {displayDate(trip.endedAt)}. Καταχώριση ολοκλήρωσης: {displayDate(trip.completedAt)}.</p>
-        {trip.conditionsLabel && <p className="ui-help">Αποθηκευμένο στιγμιότυπο, όχι τρέχουσες συνθήκες: {trip.conditionsLabel} · {displayDate(trip.conditionsRecordedAt)}</p>}
-        {trip.notes && <p className="whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-2 text-xs">{trip.notes}</p>}
-        <TripMediaGallery images={trip.images} />
-        {trip.fishRecords.map((fish) => <div key={fish.id} className="border-t border-slate-100 pt-2"><p className="text-xs font-bold">{fish.count}x {fish.species} · {fishMetrics(fish)}</p>{fish.notes && <p className="ui-help">{fish.notes}</p>}<TripMediaGallery images={fish.images} /></div>)}
+        <TripDetails trip={trip} />
         <div className="flex flex-wrap gap-2">
-          {trip.userId === user?.id && <button className="ui-secondary" onClick={() => onSelectTrip(trip.id)}>Επεξεργασία / πρόχειρο</button>}
+          <button className="ui-secondary" onClick={() => { setEditingTripId(undefined); onSelectTrip(trip.id); }}>Λεπτομέρειες</button>
+          {trip.userId === user?.id && <button className="ui-secondary" onClick={() => editTrip(trip.id)}>Επεξεργασία / πρόχειρο</button>}
           <button className="ui-secondary" onClick={() => onRecheck({ name: trip.locationName, lat: trip.lat, lon: trip.lon, technique: trip.technique })}>Νέος έλεγχος συνθηκών</button>
           <button className="ui-secondary" onClick={() => onDestination({ name: trip.locationName, lat: trip.lat, lon: trip.lon, technique: trip.technique })}>Νέα εξόρμηση εδώ</button>
           {trip.userId === user?.id && <button className="ui-secondary" disabled={busy} onClick={() => void remove(trip)}>Διαγραφή</button>}
         </div>
       </article>)}
-    </div>
+    </div>}
   </section>;
+}
+
+function TripDetails({ trip }: { trip: SavedFishingTrip }) {
+  return <>
+    <p className="ui-eyebrow">{trip.username ? `@${trip.username}` : "Δημόσια κοινοποίηση"} · {trip.techniqueLabel}</p><h3 className="break-words font-black">{trip.locationName}</h3>
+    <p className="ui-help">{displayDate(trip.tripDate)} · {trip.status === "active" ? "Ενεργή, ιδιωτική" : "Ολοκληρωμένη"} · {trip.recordingMode === "historical" ? "Ιστορική καταχώριση" : "Ζωντανή καταγραφή"}</p>
+    <p className="text-xs font-bold">{tripOutcomeLabel(trip)}</p>
+    <p className="ui-help">{trip.visibility === "public" ? `Δημόσια · ${trip.publicLocationPrecision === "exact" ? "ακριβές στίγμα" : "προσεγγιστική τοποθεσία για το κοινό"}` : "Ιδιωτική"}</p>
+    <p className="ui-help">Πραγματική λήξη: {displayDate(trip.endedAt)}. Καταχώριση ολοκλήρωσης: {displayDate(trip.completedAt)}.</p>
+    {(trip.fishingMinutes != null || trip.anglerCount != null) && <p className="ui-help">Λεπτά ψαρέματος: {trip.fishingMinutes ?? "Άγνωστα"} · Ψαράδες: {trip.anglerCount ?? "Άγνωστοι"}</p>}
+    {trip.conditionsLabel && <p className="ui-help">Αποθηκευμένο στιγμιότυπο, όχι τρέχουσες συνθήκες: {trip.conditionsLabel} · {displayDate(trip.conditionsRecordedAt)}</p>}
+    {trip.notes && <p className="whitespace-pre-wrap break-words rounded-xl bg-slate-50 p-2 text-xs">{trip.notes}</p>}
+    <TripMediaGallery images={trip.images} />
+    {trip.fishRecords.map((fish) => <div key={fish.id} className="break-words border-t border-slate-100 pt-2"><p className="text-xs font-bold">{fish.count}x {fish.species} · {fishMetrics(fish)}</p>{fish.notes && <p className="ui-help whitespace-pre-wrap">{fish.notes}</p>}<TripMediaGallery images={fish.images} /></div>)}
+  </>;
 }
 
 function TripEditor({ user, subject, trip, destination, activeTrip, onUpdated, onSaved, onClose, onRecheck }: {

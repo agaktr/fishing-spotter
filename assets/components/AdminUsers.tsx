@@ -12,8 +12,14 @@ export function AdminUsers() {
   const [error, setError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [invitation, setInvitation] = useState<{ username: string; invitationToken: string; expiresAt: string }>();
+  const [invitation, setInvitation] = useState<{ username: string; invitationToken: string; expiresAt: string; userCreated?: boolean }>();
   const [revision, setRevision] = useState(0);
+  const [copyStatus, setCopyStatus] = useState("");
+
+  async function copyInvitation(value: string, label: string) {
+    try { await navigator.clipboard.writeText(value); setCopyStatus(`${label}: αντιγράφηκε. Κοινοποίησέ το μόνο ιδιωτικά.`); }
+    catch { setCopyStatus("Η αντιγραφή δεν ήταν διαθέσιμη. Επίλεξε και αντέγραψε χειροκίνητα το username ή τον κωδικό παρακάτω."); }
+  }
 
   useEffect(() => {
     const ended = () => { setUsers([]); setInvitation(undefined); setUsername(""); setDisplayName(""); };
@@ -33,12 +39,12 @@ export function AdminUsers() {
   }, [session.user?.id, session.user?.role, revision]);
 
   async function submit(event: FormEvent) {
-    event.preventDefault(); setBusy(true); setInvitation(undefined);
+    event.preventDefault(); setBusy(true); setInvitation(undefined); setCopyStatus("");
     try {
       const result = await createUser(username.trim(), displayName.trim());
       if (verifiedUserId() !== session.user?.id) return;
       setUsers((items) => [...items, result.user].sort((a, b) => a.username.localeCompare(b.username)));
-      setInvitation({ ...result, username: result.user.username });
+      setInvitation({ ...result, username: result.user.username, userCreated: true });
       setUsername(""); setDisplayName(""); setError(undefined);
     } catch (error) { setError(error instanceof Error ? error.message : "Η δημιουργία απέτυχε."); }
     finally { setBusy(false); }
@@ -58,7 +64,7 @@ export function AdminUsers() {
 
   async function recover(user: ApiUser) {
     if (!window.confirm(`Νέα πρόσκληση ανάκτησης για @${user.username}; Μοιράσου την μόνο ιδιωτικά με τον κάτοχο.`)) return;
-    setBusy(true); setInvitation(undefined);
+    setBusy(true); setInvitation(undefined); setCopyStatus("");
     try { const issued = await issueInvitation(user.id); if (verifiedUserId() !== session.user?.id) return; setInvitation({ ...issued, username: user.username }); setError(undefined); }
     catch (error) { setError(error instanceof Error ? error.message : "Η πρόσκληση δεν εκδόθηκε."); }
     finally { setBusy(false); }
@@ -73,11 +79,24 @@ export function AdminUsers() {
     {session.restoring ? <p className="ui-notice mt-6">Επαλήθευση συνεδρίας...</p> : !session.user ? <section className="mx-auto mt-8 max-w-md rounded-3xl bg-white p-5 shadow-glow"><h2 className="text-xl font-black">Σύνδεση διαχειριστή</h2><AuthForm onConnected={session.connect} /></section> : <>
       <div className="mt-6 flex flex-wrap items-center gap-3"><p className="break-all text-sm font-bold">@{session.user.username}</p><button className="ui-secondary" onClick={() => void session.disconnect()}>Αποσύνδεση</button></div>
       {session.user.role !== "admin" ? <p className="ui-notice mt-4">Ο λογαριασμός σου δεν έχει δικαίωμα διαχείρισης. Δεν εμφανίζονται στοιχεία άλλων χρηστών.</p> : <>
-        {invitation && <section className="ui-warning mt-6" aria-label="Νέα ιδιωτική πρόσκληση"><h2 className="font-black">Νέα πρόσκληση για @{invitation.username}</h2><p className="mt-2">Εμφανίζεται μόνο τώρα. Κοινοποίησέ την ιδιωτικά, όχι σε δημόσια σημείωση, σύνδεσμο ή screenshot.</p><code className="mt-3 block select-all break-all rounded-xl bg-white p-3">{invitation.invitationToken}</code><p className="mt-2">Λήξη: {new Date(invitation.expiresAt).toLocaleString("el-GR")}</p><button className="ui-secondary mt-3" onClick={() => setInvitation(undefined)}>Απόκρυψη πρόσκλησης</button></section>}
+        {invitation && <section className="ui-warning mt-6" aria-label="Νέα ιδιωτική πρόσκληση">
+          <h2 className="break-words font-black" role="status">{invitation.userCreated ? "Ο χρήστης δημιουργήθηκε" : "Η πρόσκληση δημιουργήθηκε"}: @{invitation.username}</h2>
+          <p className="mt-2">Εμφανίζεται μόνο τώρα. Κοινοποίησε το username και τον κωδικό μόνο ιδιωτικά στον κάτοχο, όχι σε δημόσια σημείωση, σύνδεσμο ή screenshot.</p>
+          <p className="mt-3 font-bold">Username</p><code className="block select-all break-all rounded-xl bg-white p-3">{invitation.username}</code>
+          <button type="button" className="ui-secondary mt-2" onClick={() => void copyInvitation(invitation.username, "Username")}>Αντιγραφή username</button>
+          <p className="mt-3 font-bold">Κωδικός πρόσκλησης μίας χρήσης</p><code className="block select-all break-all rounded-xl bg-white p-3">{invitation.invitationToken}</code>
+          <button type="button" className="ui-secondary mt-2" onClick={() => void copyInvitation(invitation.invitationToken, "Κωδικός πρόσκλησης")}>Αντιγραφή κωδικού πρόσκλησης</button>
+          {copyStatus && <p role="status" className="mt-2">{copyStatus}</p>}
+          <p className="mt-3 font-bold">Λήξη: <time dateTime={invitation.expiresAt}>{new Date(invitation.expiresAt).toLocaleString("el-GR", { timeZoneName: "short" })}</time></p>
+          <p className="mt-2">Ο χρήστης επιλέγει «Ενεργοποίηση λογαριασμού», συμπληρώνει το username και την πρόσκληση και ορίζει προσωπικό κωδικό. Η δημιουργία χρήστη δεν αρκεί για σύνδεση. Μετά την ενεργοποίηση επιλέγει «Σύνδεση» με τον προσωπικό του κωδικό.</p>
+          <p className="mt-2">Αν η πρόσκληση λήξει ή χαθεί, έκδωσε νέα από «Πρόσκληση / ανάκτηση». Η νέα πρόσκληση ακυρώνει την προηγούμενη. Για ανενεργό χρήστη, επίτρεψε πρώτα την πρόσβαση από τη λίστα.</p>
+          <button className="ui-secondary mt-3" onClick={() => setInvitation(undefined)}>Απόκρυψη πρόσκλησης</button>
+        </section>}
         <section className="mt-6 grid items-start gap-6 lg:grid-cols-[20rem_1fr]">
-          <form onSubmit={submit} className="space-y-3 rounded-3xl bg-white p-5 shadow-glow"><h2 className="text-xl font-black">Νέος χρήστης</h2><label className="ui-label">Username<input className="ui-input" value={username} onChange={(e) => setUsername(e.target.value)} required /></label><label className="ui-label">Όνομα εμφάνισης<input className="ui-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></label><button className="ui-primary w-full" disabled={busy || loading}>Δημιουργία και πρόσκληση</button></form>
+          <form onSubmit={submit} className="space-y-3 rounded-3xl bg-white p-5 shadow-glow"><h2 className="text-xl font-black">Νέος χρήστης</h2><p className="ui-help">Δημιούργησε τον λογαριασμό και στείλε ιδιωτικά την πρόσκληση που θα εμφανιστεί. Ο χρήστης ορίζει μόνος του τον προσωπικό κωδικό κατά την ενεργοποίηση.</p><label className="ui-label">Username<input className="ui-input" value={username} onChange={(e) => setUsername(e.target.value)} required /></label><label className="ui-label">Όνομα εμφάνισης<input className="ui-input" value={displayName} onChange={(e) => setDisplayName(e.target.value)} required /></label><button className="ui-primary w-full" disabled={busy || loading}>Δημιουργία και πρόσκληση</button></form>
           <div className="min-w-0 rounded-3xl bg-white p-5 shadow-glow"><div className="flex flex-wrap items-center justify-between gap-2"><h2 className="text-xl font-black">Χρήστες ({users.length})</h2><button className="ui-secondary" disabled={loading || busy} onClick={() => setRevision((n) => n + 1)}>Ανανέωση</button></div>
-            {loading ? <p className="ui-help mt-4">Φόρτωση...</p> : <div className="mt-4 space-y-3">{users.map((user) => <article key={`${user.id}:${user.updatedAt}`} className="space-y-3 rounded-2xl border border-slate-200 p-3"><p className="break-all font-black">@{user.username} <span className="text-xs text-slate-500">{user.active ? "Ενεργός" : "Ανενεργός"}</span></p>
+            <p className="ui-help mt-3">Η άδεια πρόσβασης δεν επιβεβαιώνει ότι ο χρήστης έχει ορίσει κωδικό. Για πρώτη ενεργοποίηση ή ανάκτηση, στείλε πρόσκληση.</p>
+            {loading ? <p className="ui-help mt-4">Φόρτωση...</p> : <div className="mt-4 space-y-3">{users.map((user) => <article key={`${user.id}:${user.updatedAt}`} className="space-y-3 rounded-2xl border border-slate-200 p-3"><p className="break-all font-black">@{user.username} <span className="text-xs text-slate-500">{user.active ? "Πρόσβαση επιτρέπεται" : "Πρόσβαση σε αναστολή"}</span></p>
               <form onSubmit={(event) => { event.preventDefault(); const values = new FormData(event.currentTarget); void change(user, { displayName: String(values.get("displayName")), role: values.get("role") as ApiUser["role"] }); }} className="space-y-2">
                 <label className="ui-label">Όνομα εμφάνισης<input name="displayName" defaultValue={user.displayName} className="ui-input" required /></label><label className="ui-label">Ρόλος<select name="role" defaultValue={user.role} className="ui-input"><option value="user">Χρήστης</option><option value="admin">Διαχειριστής</option></select></label><button className="ui-secondary w-full" disabled={busy}>Αποθήκευση στοιχείων</button>
               </form>

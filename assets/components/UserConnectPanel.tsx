@@ -28,16 +28,17 @@ export function AuthForm({ onConnected }: { onConnected: (user: ApiUser) => void
   return <form onSubmit={submit} className="mt-4 space-y-3">
     <div className="grid grid-cols-2 gap-2">
       <button type="button" disabled={loading} aria-pressed={!activation} className={!activation ? "ui-primary" : "ui-secondary"} onClick={() => { setActivation(false); setError(undefined); setInvitationToken(""); setPassword(""); setConfirmation(""); }}>Σύνδεση</button>
-      <button type="button" disabled={loading} aria-pressed={activation} className={activation ? "ui-primary" : "ui-secondary"} onClick={() => { setActivation(true); setError(undefined); setPassword(""); setConfirmation(""); }}>Ενεργοποίηση / ανάκτηση</button>
+      <button type="button" disabled={loading} aria-pressed={activation} className={activation ? "ui-primary" : "ui-secondary"} onClick={() => { setActivation(true); setError(undefined); setPassword(""); setConfirmation(""); }}>Ενεργοποίηση λογαριασμού</button>
     </div>
-    <p className="ui-help">{activation ? "Ζήτησε ιδιωτικά από τον διαχειριστή πρόσκληση για τον λογαριασμό σου και όρισε νέο κωδικό. Ισχύει και για παλιούς λογαριασμούς." : "Σύνδεση με username και κωδικό. Το username μόνο του δεν παρέχει πρόσβαση."}</p>
+    <p className="ui-help">{activation ? "Η πρόσκληση είναι ιδιωτικός κωδικός μίας χρήσης από τον διαχειριστή, όχι ο κωδικός σύνδεσής σου. Συμπλήρωσε το username που σου έδωσε, την πρόσκληση και έναν νέο προσωπικό κωδικό. Χρησιμοποιείται και για ανάκτηση πρόσβασης." : "Έχεις ήδη ορίσει προσωπικό κωδικό; Συνδέσου με το username και τον κωδικό σου. Αν δεν έχεις ενεργοποιήσει τον λογαριασμό σου ή ξέχασες τον κωδικό, ζήτησε ιδιωτικά πρόσκληση από τον διαχειριστή και επίλεξε «Ενεργοποίηση λογαριασμού»."}</p>
+    {activation && <p className="ui-notice">Χρησιμοποίησε την πιο πρόσφατη πρόσκληση πριν από τη λήξη που σου έστειλε ο διαχειριστής. Αν έληξε, χρησιμοποιήθηκε ή δεν έγινε δεκτή, έλεγξε το username και ζήτησε νέα πρόσκληση. Μετά την ενεργοποίηση χρησιμοποιείς τη «Σύνδεση» με τον προσωπικό σου κωδικό.</p>}
     <label className="ui-label">Username<input className="ui-input" value={username} onChange={(e) => setUsername(e.target.value)} autoComplete="username" required disabled={loading} /></label>
     {activation && <label className="ui-label">Κωδικός πρόσκλησης<input className="ui-input" type="password" value={invitationToken} onChange={(e) => setInvitationToken(e.target.value)} autoComplete="off" required disabled={loading} /></label>}
     <label className="ui-label">{activation ? "Νέος κωδικός" : "Κωδικός"}<input className="ui-input" type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete={activation ? "new-password" : "current-password"} required disabled={loading} /></label>
     {activation && <label className="ui-label">Επιβεβαίωση κωδικού<input className="ui-input" type="password" value={confirmation} onChange={(e) => setConfirmation(e.target.value)} autoComplete="new-password" required disabled={loading} /></label>}
     <label className="ui-check"><input type="checkbox" checked={remember} onChange={(e) => setRemember(e.target.checked)} />Να παραμείνω συνδεδεμένος σε αυτή την προσωπική συσκευή</label>
     <p className="ui-help">Χωρίς αυτή την επιλογή, η συνεδρία διατηρείται μόνο σε αυτή την καρτέλα. Μην την επιλέγεις σε κοινόχρηστη συσκευή.</p>
-    {error && <p role="alert" className="ui-error">{error}</p>}
+    {error && <div role="alert" className="ui-error"><p>{error}</p><p className="mt-2">{activation ? "Έλεγξε το username και την πιο πρόσφατη πρόσκληση. Αν το πρόβλημα συνεχίζεται, ζήτησε νέα πρόσκληση από τον διαχειριστή." : "Έλεγξε username και κωδικό. Αν δεν έχεις ορίσει κωδικό ή χρειάζεσαι ανάκτηση, ζήτησε πρόσκληση και επίλεξε «Ενεργοποίηση λογαριασμού»."}</p></div>}
     <button className="ui-primary w-full" disabled={loading} type="submit">{loading ? "Επαλήθευση..." : activation ? "Ενεργοποίηση και σύνδεση" : "Σύνδεση"}</button>
   </form>;
 }

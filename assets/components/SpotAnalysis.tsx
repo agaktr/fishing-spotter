@@ -78,6 +78,18 @@ function DepthProfileGraphic({ spot }: { spot: RankedSpot }) {
   if (!points.length) return <p className="ui-help">Δεν υπάρχει διαθέσιμο προφίλ βάθους.</p>;
   const maximum = Math.max(1, ...points.map((point) => point.depthM!));
   const distance = Math.max(1, ...points.map((point) => point.distanceM));
-  const samples = points.map((point) => ({ ...point, x: 25 + point.distanceM / distance * 270, y: 25 + point.depthM! / maximum * 70 }));
-  return <div className="rounded-2xl border border-tide/25 bg-sky-50 p-3"><p className="ui-eyebrow">Ενδεικτικό προφίλ βάθους ζώνης</p><svg className="mt-2 w-full" viewBox="0 0 320 125" role="img" aria-label="Ενδεικτικά δείγματα βάθους, όχι ακριβής βολή"><path d="M10 20 H310" stroke="#19a7ce" strokeWidth="2" /><polyline points={samples.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#0b5f6f" strokeWidth="3" />{samples.map((point, index) => <g key={index}><circle cx={point.x} cy={point.y} r="4" fill="#09202a" /><text x={point.x} y={point.y - 7} textAnchor="middle" fontSize="9" fill="#09202a">{point.depthM!.toFixed(0)}μ</text><text x={point.x} y="118" textAnchor="middle" fontSize="9" fill="#0b5f6f">{point.distanceM}μ</text></g>)}</svg><p className="ui-help">Ονομαστική κλίμακα περίπου 115μ. Δείγματα σε μικρότερες αποστάσεις μπορεί να προέρχονται από το ίδιο κελί.</p></div>;
+  const samples = points.map((point) => ({ ...point, x: 40 + point.distanceM / distance * 240, y: 42 + point.depthM! / maximum * 72 }));
+  return <figure className="depth-profile rounded-2xl border border-tide/25 bg-sky-50 p-3">
+    <h3 className="ui-eyebrow">Ενδεικτικό προφίλ βάθους ζώνης</h3>
+    <svg className="mt-2 w-full" viewBox="0 0 320 180" role="img" aria-label="Εκτιμώμενο βάθος σε μέτρα προς τα κάτω, απόσταση από το σημείο σε μέτρα προς τα δεξιά">
+      <text x="12" y="18" fill="#0b5f6f">Εκτιμώμενο βάθος (m)</text>
+      <path d="M40 36 V138 H296 M40 42 H296" fill="none" stroke="#19a7ce" strokeWidth="2" />
+      <text x="28" y="46" textAnchor="end" fill="#0b5f6f">0</text>
+      <polyline points={samples.map((point) => `${point.x},${point.y}`).join(" ")} fill="none" stroke="#0b5f6f" strokeWidth="3" />
+      {samples.map((point, index) => <g key={index}><circle cx={point.x} cy={point.y} r="4" fill="#09202a" /><text x={point.x} y={point.y - 9} textAnchor="middle" fill="#09202a">~{point.depthM!.toFixed(0)}</text><text x={point.x} y="153" textAnchor="middle" fill="#0b5f6f">{point.distanceM}</text></g>)}
+      <text x="168" y="175" textAnchor="middle" fill="#0b5f6f">Απόσταση από το σημείο (m)</text>
+    </svg>
+    <figcaption className="ui-help mt-2">EMODnet: εκτίμηση βάθους, όχι επιτόπια μέτρηση. Κελιά ~115 m. Δείγματα σε μικρότερες αποστάσεις μπορεί να προέρχονται από το ίδιο κελί. Όχι για ακριβή βολή ή πλοήγηση.</figcaption>
+    <details className="mt-3 text-sm"><summary className="cursor-pointer py-2 font-bold">Τιμές δειγμάτων</summary><table className="w-full text-left"><thead><tr><th scope="col">Απόσταση (m)</th><th scope="col">Εκτιμώμενο βάθος (m)</th></tr></thead><tbody>{samples.map((point, index) => <tr key={index}><td>{point.distanceM}</td><td>~{point.depthM!.toFixed(0)}</td></tr>)}</tbody></table></details>
+  </figure>;
 }
