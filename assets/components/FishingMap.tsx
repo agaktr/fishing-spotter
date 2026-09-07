@@ -171,6 +171,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
         promoteId: "id",
         data: EMPTY_COLLECTION,
       });
+      map.addSource("selected-trip", { type: "geojson", promoteId: "id", data: EMPTY_COLLECTION });
       map.addSource("spots", {
         type: "geojson",
         data: EMPTY_COLLECTION,
@@ -461,7 +462,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
           "text-size": 11,
           "text-offset": [0, 1.4],
           "text-anchor": "top",
-          "text-allow-overlap": true,
+          "text-allow-overlap": false,
         },
         paint: {
           "text-color": "#78350f",
@@ -470,6 +471,10 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
         },
       });
 
+      for (const id of ["trips-halo", "trips-circle", "trips-label"]) {
+        const layer = map.getStyle().layers.find((layer) => layer.id === id)!;
+        map.addLayer({ ...layer, id: `selected-${id}`, source: "selected-trip" } as maplibregl.LayerSpecification);
+      }
       map.addSource("measurement", { type: "geojson", data: EMPTY_COLLECTION });
       map.addLayer({ id: "measurement-line", type: "line", source: "measurement", filter: ["==", ["geometry-type"], "LineString"], paint: { "line-color": "#fbbf24", "line-width": 4, "line-dasharray": [2, 2] } });
       map.addLayer({ id: "measurement-endpoints", type: "circle", source: "measurement", filter: ["==", ["geometry-type"], "Point"], paint: { "circle-radius": 7, "circle-color": "#fbbf24", "circle-stroke-color": "#09202a", "circle-stroke-width": 3 } });
@@ -496,6 +501,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
       map.on("click", "trips-halo", selectTrip);
       map.on("click", "trips-circle", selectTrip);
       map.on("click", "trips-label", selectTrip);
+      for (const id of ["selected-trips-halo", "selected-trips-circle", "selected-trips-label"]) map.on("click", id, selectTrip);
 
       map.on("click", (event) => {
         if (measuringRef.current) {
@@ -503,7 +509,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
           setMeasurePoints((points) => points.length < 2 ? [...points, point] : points);
           return;
         }
-        const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "point-analysis-points", "point-analysis-labels", "trips-halo", "trips-circle", "trips-label"] });
+        const existingFeatures = map.queryRenderedFeatures(event.point, { layers: ["spots-circle", "spots-rank", "point-analysis-points", "point-analysis-labels", "trips-halo", "trips-circle", "trips-label", "selected-trips-halo", "selected-trips-circle", "selected-trips-label"] });
         if (existingFeatures.length > 0) {
           return;
         }
@@ -618,7 +624,8 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
     const update = () => {
       const validTrips = trips.filter(isValidTripMarker);
       const source = map.getSource("trips") as maplibregl.GeoJSONSource | undefined;
-      source?.setData(toTripCollection(validTrips));
+      source?.setData(toTripCollection(validTrips.filter((trip) => trip.id !== selectedTripId)));
+      (map.getSource("selected-trip") as maplibregl.GeoJSONSource | undefined)?.setData(toTripCollection(validTrips.filter((trip) => trip.id === selectedTripId)));
 
       const fitKey = tripFitKey(validTrips);
       if (!tripFocus && !location && !pickedPoint && validTrips.length > 0 && lastTripFitKeyRef.current !== fitKey) {
@@ -635,7 +642,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
         map.off("load", update);
       };
     }
-  }, [location, pickedPoint, trips, tripFocus]);
+  }, [location, pickedPoint, trips, tripFocus, selectedTripId]);
 
   useEffect(() => {
     const recenterRequested = recenterKey !== lastRecenterKeyRef.current;

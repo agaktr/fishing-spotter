@@ -52,9 +52,8 @@ export function UserConnectPanel({ activeUser, onConnected, onDisconnect, onClos
       <button type="button" aria-label="Κλείσιμο λογαριασμού" onClick={onClose} className="ui-close">x</button>
     </div>
     {activeUser ? <div className="mt-4 space-y-3">
-      <p className="ui-notice">{activeUser.displayName}. Το ιδιωτικό ημερολόγιο και τα σημεία είναι ορατά μόνο στον λογαριασμό σου.</p>
-      <p className="ui-help">Η ρητή αποσύνδεση αφαιρεί τα πρόχειρα αυτού του λογαριασμού από τη συσκευή. Η απλή λήξη συνεδρίας τα διατηρεί κλειδωμένα μέχρι να συνδεθείς ξανά στον ίδιο λογαριασμό.</p>
-      <button type="button" onClick={() => { if (window.confirm("Αποσύνδεση και αφαίρεση των τοπικών, μη αποθηκευμένων προχείρων;")) onDisconnect(); }} className="ui-secondary w-full">Αποσύνδεση</button>
+      <p className="ui-notice">{activeUser.displayName}</p>
+      <button type="button" onClick={() => { if (window.confirm("Αποσύνδεση; Οι μη αποθηκευμένες αλλαγές θα αφαιρεθούν από τη συσκευή.")) onDisconnect(); }} className="ui-secondary w-full">Αποσύνδεση</button>
       {activeUser.role === "admin" && <a href="/admin" className="block text-center text-sm font-bold text-lagoon underline">Διαχείριση χρηστών</a>}
     </div> : <AuthForm onConnected={onConnected} />}
   </section>;

@@ -34,7 +34,7 @@ export function initialDraft(trip?: SavedFishingTrip, destination?: TripDestinat
     destination: trip ? { name: trip.locationName, lat: trip.lat, lon: trip.lon, technique: trip.technique } : destination,
     recordingMode: trip?.recordingMode ?? "live", completing: false,
     tripDate: localDateTime(trip?.tripDate ?? new Date().toISOString(), true), endedAt: trip?.endedAt ? localDateTime(trip.endedAt, true) : "",
-    outcome: trip?.status === "completed" ? trip.outcome : "", fishingMinutes: trip?.fishingMinutes?.toString() ?? "", anglerCount: trip?.anglerCount?.toString() ?? "",
+    outcome: trip ? trip.outcome : "zero", fishingMinutes: trip?.fishingMinutes?.toString() ?? "", anglerCount: trip?.anglerCount?.toString() ?? "",
     conditionsRecordedAt: trip?.conditionsRecordedAt ? localDateTime(trip.conditionsRecordedAt, true) : "", notes: trip?.notes ?? "", fishRecords: trip?.fishRecords ?? [], fish: { ...EMPTY_FISH },
   };
 }

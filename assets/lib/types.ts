@@ -120,6 +120,7 @@ export interface TechniqueDepthRange {
 }
 
 export interface ConditionsMetadata {
+  sourceSnapshot?: ConditionsMetadata;
   validAt?: string;
   fetchedAt?: string;
   sourceCoordinates?: Coordinates;

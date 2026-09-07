@@ -28,6 +28,8 @@ const compiledMap = ts.transpileModule(await readFile(new URL("../../components/
 const compiledJournal = ts.transpileModule(await readFile(new URL("../../components/TripJournal.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
+const historyContext = { exports: {} };
+vm.runInNewContext(ts.transpileModule(await readFile(new URL("./tripHistory.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, historyContext);
 const user = { id: "owner", username: "owner", displayName: "Owner", role: "user", active: true };
 const session = { user, token: "test-bearer-not-a-real-secret", expiresAt: "2099-01-01T00:00:00Z" };
 
@@ -71,7 +73,7 @@ function harness(existingLocalStorage) {
     if (id === "react/jsx-runtime") return jsxRuntime;
     if (id === "react") return React;
     if (id === "@/lib/client/drafts") return draftContext.exports;
-    if (id === "@/lib/techniqueProfiles") return { TECHNIQUE_PROFILES: { spinning: { label: "Spinning", species: ["profile fallback"] } } };
+    if (id === "@/lib/techniqueProfiles") return { TECHNIQUE_PROFILES: { spinning: { label: "Spinning", species: ["profile fallback"], baits: ["Profile bait"], rigs: ["Profile rig"], bestTimes: ["Profile time"], castingAdvice: "Profile casting guidance" } } };
     if (id === "@/lib/geo") return { round: (value, digits) => Number(value.toFixed(digits)) };
     if (id === "maplibre-gl") return {};
     if (id === "./TripPhotoMarker") return {};
@@ -87,7 +89,7 @@ function harness(existingLocalStorage) {
   };
 }
 
-test("selected map trip shows only its details and offers editing only to its owner", () => {
+test("journal hides draft management, recovers forms quietly and restricts editing to owners", async () => {
   const h = harness();
   const context = { exports: {}, require: (id) => {
     if (id === "react") return React;
@@ -95,7 +97,8 @@ test("selected map trip shows only its details and offers editing only to its ow
     if (id === "@/lib/client/api") return h.api;
     if (id === "@/lib/client/drafts") return h.drafts;
     if (id === "@/lib/client/tripDraft") return h.tripDraft;
-    if (id === "@/lib/techniqueProfiles") return {};
+    if (id === "@/lib/client/tripHistory") return historyContext.exports;
+    if (id === "@/lib/techniqueProfiles") return { TECHNIQUE_PROFILES: {} };
     if (id === "./TripMediaGallery") return { TripMediaGallery: ({ images }) => React.createElement("span", null, `${images.length} images`) };
     throw new Error(`Unexpected module: ${id}`);
   } };
@@ -108,13 +111,103 @@ test("selected map trip shows only its details and offers editing only to its ow
     const html = render(viewer);
     for (const text of ["Selected reef", "Shared trip notes", "Shared catch notes", "3x Sea bass", "1.5kg", "90", h.drafts.displayDate(trip.tripDate)]) assert.ok(html.includes(text), text);
     assert.ok(!html.includes("Unrelated reef"));
-    assert.equal(html.includes("Επεξεργασία / πρόχειρο"), viewer?.id === trip.userId);
+    assert.equal(html.includes("Επεξεργασία"), viewer?.id === trip.userId);
+    assert.ok(!/πρόχειρ|προχείρ|Ιδιωτική/.test(html));
     assert.ok(!html.includes("datetime-local"), "Details do not mount the editor or create a draft");
     assert.ok(html.includes("Τοποθεσία στον χάρτη"));
     assert.ok(!html.includes("Διαγραφή"), "Read-only details have no delete action");
   }
   assert.ok(render(undefined, { ...trip, outcome: "zero", fishRecords: [] }).includes("0 ψάρια"));
   assert.ok(render(undefined, { ...trip, outcome: "not-recorded", fishRecords: [] }).includes("Αποτέλεσμα μη καταγεγραμμένο"));
+  await h.login();
+  const destination = { name: "Recovery cove", lat: 36.76, lon: 22.56, technique: "spinning" };
+  const subject = "new:spinning:36.76:22.56";
+  const draft = { ...h.tripDraft.initialDraft(undefined, destination), notes: "Unsaved recovery sentinel" };
+  h.drafts.writeDraft(user.id, subject, draft);
+  const journal = (props = {}) => renderToStaticMarkup(React.createElement(context.exports.TripJournal, { user, trips: [trip], activeTrip: null, ...props }));
+  const history = journal();
+  assert.ok(history.includes("Ενεργές") && history.includes("Ολοκληρωμένες"));
+  assert.ok(!/πρόχειρ|προχείρ|Unsaved recovery sentinel/.test(history));
+  const editor = journal({ destination });
+  assert.ok(editor.includes(draft.notes), "Opening the same form recovers unsaved fields without a resume action");
+  assert.ok(!/πρόχειρ|προχείρ|πάντα ιδιωτική/.test(editor));
+  assert.ok(editor.includes("Έναρξη εξόρμησης"));
+  assert.equal(h.drafts.readDraft(user.id, subject).notes, draft.notes);
+  assert.equal(draft.outcome, "zero");
+  assert.ok(editor.includes('<option value="zero" selected="">'));
+  assert.ok(!editor.includes("Προσθήκη ψαριού / ομοιογενούς ομάδας"));
+  for (const status of ["active", "completed"]) {
+    for (const outcome of ["zero", "recorded", "not-recorded"]) {
+      assert.equal(h.tripDraft.initialDraft({ ...trip, status, outcome }).outcome, outcome);
+    }
+  }
+  for (const outcome of ["recorded", "zero", "not-recorded", "", "recorded"]) {
+    const restored = { ...draft, outcome, fishRecords: trip.fishRecords, fish: { ...draft.fish, species: "Pending catch" } };
+    h.drafts.writeDraft(user.id, subject, restored);
+    const html = journal({ destination });
+    assert.equal(html.includes("Προσθήκη ψαριού / ομοιογενούς ομάδας"), outcome !== "zero");
+    assert.ok(html.includes("3x Sea bass"), "Existing records remain accessible for every outcome");
+    assert.equal(h.drafts.readDraft(user.id, subject).fish.species, "Pending catch");
+    assert.equal(h.drafts.readDraft(user.id, subject).outcome, outcome);
+    if (outcome === "zero") {
+      assert.ok(html.includes("Οι εγγραφές δεν διαγράφηκαν"));
+      assert.throws(() => h.tripDraft.tripUpdateFromDraft(restored), /Υπάρχουν ψάρια/);
+    }
+  }
+  const spot = { weather: { validAt: "2025-06-01T10:00:00Z", fetchedAt: "2025-06-01T09:00:00Z", sourceCoordinates: { lat: 36.123, lon: 22.456 }, temporalMode: "forecast" }, marine: { validAt: "2025-06-01T11:00:00Z", fetchedAt: "2025-06-01T09:30:00Z", sourceCoordinates: { lat: 36.789, lon: 22.987 }, temporalMode: "historical" } };
+  h.drafts.writeDraft(user.id, subject, { ...draft, destination: { ...destination, spot } });
+  const metadataHtml = journal({ destination });
+  for (const text of ["Ήλιος και σύννεφο", "Θαλάσσια κύματα", "36.123, 22.456", "36.789, 22.987", ...Object.values(spot).flatMap((item) => [h.drafts.displayDate(item.validAt), h.drafts.displayDate(item.fetchedAt)])]) assert.ok(metadataHtml.includes(text), text);
+  h.drafts.writeDraft(user.id, subject, { ...draft, destination: { ...destination, spot: { weather: { sourceSnapshot: spot.weather }, marine: {} } } });
+  const legacyMetadata = journal({ destination });
+  assert.ok(legacyMetadata.includes("36.123, 22.456"));
+  assert.ok(legacyMetadata.includes("χωρίς χρονική αντιστοίχιση"));
+  assert.ok(legacyMetadata.includes("Μη διαθέσιμες"));
+});
+
+test("trip layers are unclustered and all nearby photo fans render without zoom or source-feature gating", () => {
+  const sources = {}, layers = [], handlers = [], effects = [], selected = [];
+  let stateIndex = 0, refIndex = 0;
+  const map = {
+    addControl() {},
+    addSource: (id, source) => { sources[id] = source; },
+    addLayer: (layer) => layers.push(layer),
+    getStyle: () => ({ layers }),
+    on: (...args) => handlers.push(args),
+  };
+  const context = { exports: {}, require: (id) => {
+    if (id === "react/jsx-runtime") return jsxRuntime;
+    if (id === "react") return {
+      useState: (value) => [stateIndex++ === 0 ? map : value, () => {}],
+      useRef: (value) => ({ current: refIndex++ === 1 ? {} : value }),
+      useEffect: (effect) => effects.push(effect),
+    };
+    if (id === "maplibre-gl") return { default: { Map: class { constructor() { return map; } }, NavigationControl: class {}, ScaleControl: class {} } };
+    if (id === "./TripPhotoMarker") return { TripPhotoMarker: () => null, tripMapPhotos: (trip) => trip.images };
+    if (id === "@/lib/geo") return {};
+    throw new Error(`Unexpected module: ${id}`);
+  } };
+  vm.runInNewContext(compiledMap, context);
+  const trips = Array.from({ length: 30 }, (_, i) => ({ id: `trip-${i}`, lat: 36.76, lon: 22.56 + i * 0.00001, images: [{ id: `photo-${i}` }] }));
+  const tree = context.exports.FishingMap({ spots: [], radiusKm: 25, trips: [...trips, { ...trips[0], id: "invalid", lat: NaN }, { ...trips[0], id: "no-photo", images: [] }], selectedTripId: "trip-2", onSelectTrip: (id) => selected.push(id) });
+  effects.slice(0, 4).forEach((effect) => effect());
+  handlers.find(([event]) => event === "load")[1]();
+  assert.equal(sources.trips.cluster, undefined);
+  assert.equal(sources.trips.clusterRadius, undefined);
+  assert.equal(sources.trips.clusterMaxZoom, undefined);
+  assert.ok(!layers.some(({ id }) => id.includes("cluster")));
+  assert.ok(!handlers.some(([, layer]) => typeof layer === "string" && layer.includes("cluster")));
+  for (const layer of layers.filter(({ source }) => ["trips", "selected-trip"].includes(source))) {
+    assert.equal(layer.filter, undefined);
+    assert.equal(layer.minzoom, undefined);
+    assert.equal(layer.maxzoom, undefined);
+  }
+  const fans = tree.props.children[1];
+  assert.deepEqual(Array.from(fans, ({ props }) => props.trip.id), trips.map(({ id }) => id));
+  assert.equal(fans.filter(({ props }) => props.selected).length, 1);
+  fans[2].props.onSelect();
+  handlers.find(([event, layer]) => event === "click" && layer === "trips-circle")[2]({ features: [{ properties: { id: "trip-4" } }] });
+  assert.deepEqual(selected, ["trip-2", "trip-4"]);
 });
 
 test("map pins and cleared results preserve camera; selection and explicit recenter preserve zoom", () => {
@@ -132,6 +225,7 @@ test("map pins and cleared results preserve camera; selection and explicit recen
     flyTo: (options) => camera.push(options),
     fitBounds: (bounds, options) => camera.push(options),
     off() {},
+    on() {},
   };
   const context = { exports: {}, require: (id) => {
     if (id === "react/jsx-runtime") return jsxRuntime;
@@ -199,6 +293,18 @@ test("map pins and cleared results preserve camera; selection and explicit recen
   const beforeRefresh = camera.length;
   render({ tripFocus: repeatedFocus, trips: [{ ...trips[0], id: "newly-loaded" }] });
   assert.equal(camera.length, beforeRefresh, "a delayed trip refresh must not override explicit trip focus");
+  render({ tripFocus: repeatedFocus, trips, selectedTripId: "trip" });
+  assert.equal(data.filter(({ id }) => id === "trips").at(-1).value.features.length, 0, "selected trip must not render a duplicate ordinary pin");
+  assert.equal(data.filter(({ id }) => id === "selected-trip").at(-1).value.features[0].properties.id, "trip");
+  assert.equal(camera.length, beforeRefresh, "trip selection alone must not change the camera");
+  const nearbyTrips = Array.from({ length: 30 }, (_, i) => ({ ...trips[0], id: `nearby-${i}`, lon: point.lon + i * 0.00001 }));
+  render({ tripFocus: repeatedFocus, trips: nearbyTrips, selectedTripId: "nearby-2" });
+  const ordinary = data.filter(({ id }) => id === "trips").at(-1).value.features;
+  const highlighted = data.filter(({ id }) => id === "selected-trip").at(-1).value.features;
+  assert.equal(ordinary.length, 29);
+  assert.equal(highlighted.length, 1);
+  assert.deepEqual([...ordinary, ...highlighted].map(({ id }) => id).sort(), nearbyTrips.map(({ id }) => id).sort());
+  assert.equal(camera.length, beforeRefresh);
 });
 
 test("map photos include trip and fish images only for owner or explicit public sharing", async () => {
@@ -229,6 +335,59 @@ test("map photos include trip and fish images only for owner or explicit public 
   const cleanup = effects[2]();
   removed = true;
   assert.doesNotThrow(cleanup, "logout may remove the parent map before photo marker cleanup");
+});
+
+test("photo fan fills three valid slots, keeps total count and revokes blobs on session end", async () => {
+  const code = ts.transpileModule(await readFile(new URL("../../components/TripPhotoMarker.tsx", import.meta.url), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const states = [], effects = [], requests = [], revoked = [], listeners = new Map();
+  let cursor = 0, selected = 0, resolveLate;
+  const context = { exports: {}, document: { createElement: () => ({}) },
+    window: { addEventListener: (name, fn) => listeners.set(name, fn), removeEventListener: (name) => listeners.delete(name) },
+    URL: { createObjectURL: (blob) => `blob:${blob}`, revokeObjectURL: (url) => revoked.push(url) },
+    Image: class { async decode() { if (this.src === "blob:bad") throw Error("decode"); } },
+    require: (id) => {
+      if (id === "react") return { useState: (initial) => { const i = cursor++; if (!(i in states)) states[i] = typeof initial === "function" ? initial() : initial; return [states[i], (value) => { states[i] = value; }]; }, useEffect: (effect) => effects.push(effect) };
+      if (id === "react-dom") return { createPortal: (node) => node };
+      if (id === "react/jsx-runtime") return jsxRuntime;
+      if (id === "@/lib/client/api") return { SESSION_ENDED_EVENT: "ended", fetchTripImage: async (url) => { requests.push(url); if (url === "fail") throw Error("fetch"); if (url === "late") return new Promise((resolve) => { resolveLate = resolve; }); return url; } };
+      return {};
+    },
+  };
+  vm.runInNewContext(code, context);
+  let trip = { id: "trip", userId: "owner", locationName: "Coast", images: ["fail", "bad", "one", "two", "three", "unused"].map((id) => ({ id, thumbnailUrl: id })), fishRecords: [] };
+  const render = () => { cursor = 0; effects.length = 0; return context.exports.TripPhotoMarker({ map: {}, trip, userId: "owner", selected: false, onSelect: () => selected++ }); };
+  render();
+  const cleanup = effects[1]();
+  await new Promise(setImmediate);
+  let button = render();
+  assert.deepEqual(requests, ["fail", "bad", "one", "two", "three"]);
+  assert.equal(button.props["data-cards"], 3);
+  assert.match(button.props["aria-label"], /6 /);
+  assert.equal(button.props.children[1].props.children, 6);
+  button.props.onClick({ stopPropagation() {} });
+  assert.equal(selected, 1);
+  listeners.get("ended")();
+  assert.equal(render().props["data-ready"], false);
+  cleanup();
+  assert.deepEqual(revoked.sort(), ["blob:bad", "blob:one", "blob:three", "blob:two"]);
+  for (const count of [0, 1, 2, 3, 5]) {
+    trip = { ...trip, images: Array.from({ length: count }, (_, i) => ({ id: `${i}`, thumbnailUrl: `${i}` })) };
+    assert.equal(render().props["data-ready"], false, "changed media must not expose stale cards");
+    const clear = effects[1]();
+    await new Promise(setImmediate);
+    assert.equal(render().props["data-cards"], Math.min(count, 3));
+    clear();
+  }
+  trip = { ...trip, images: [{ id: "late", thumbnailUrl: "late" }] };
+  render();
+  const clear = effects[1]();
+  clear();
+  resolveLate("late");
+  await new Promise(setImmediate);
+  assert.equal(render().props["data-ready"], false);
+  assert.ok(!revoked.includes("blob:late"), "cancelled fetch must not create an object URL");
 });
 
 test("password login and restoration use the bearer contract, not username restoration", async () => {
@@ -655,17 +814,13 @@ test("query-only scan rechecks use summary technique and coordinates without rep
   assert.equal(structured.gpsAccuracyM, undefined, "An old GPS accuracy is not a new GPS observation");
 });
 
-test("the actual approximateZone contract renders as non-actionable ranges without manufacturing a map target", async () => {
+test("the approximateZone API contract remains intact without manufacturing a map target", async () => {
   const h = harness();
   const zone = { actionable: false, label: "Coarse model zone; not a cast target", bearingDeg: 90, direction: "E", distanceRangeM: [60, 150], depthRangeM: [4, 12], confidence: "low" };
   h.reply({ mode: "point", pointAnalysis: { requestedPoint: { lat: 36, lon: 22 }, analyzedPoint: { lat: 36, lon: 22 }, adjustedToWater: false, waterDistanceM: 0, spatialResolutionM: 115, approximateZone: zone }, spots: [{ typicalSpecies: ["Backend typical species"], likelyFish: [] }] });
   const response = await h.api.searchSpots({ technique: "spinning", location: "Selected point", mode: "point", coordinates: { lat: 36, lon: 22 }, radiusKm: 25, resultLimit: 24, saveHistory: false });
-  const html = renderToStaticMarkup(React.createElement(h.analysis.ApproximateZoneInfo, { zone: response.pointAnalysis.approximateZone, resolutionM: response.pointAnalysis.spatialResolutionM }));
-  assert.ok(html.includes(zone.label));
-  assert.ok(html.includes('data-actionable="false"'));
-  assert.ok(html.includes("60 - 150"));
-  assert.ok(html.includes("4.0 - 12.0"));
-  assert.ok(html.includes("115"));
+  assert.deepEqual(response.pointAnalysis.approximateZone, zone);
+  assert.equal(h.analysis.ApproximateZoneInfo, undefined);
   const point = response.pointAnalysis;
   const features = h.map.toPointAnalysisCollection(point).features;
   assert.equal(features.length, 1);
@@ -675,6 +830,59 @@ test("the actual approximateZone contract renders as non-actionable ranges witho
   const speciesHtml = renderToStaticMarkup(React.createElement(h.analysis.SpeciesProfile, { technique: "spinning", species: response.spots[0].typicalSpecies, target: "" }));
   assert.ok(speciesHtml.includes("Backend typical species"));
   assert.equal(speciesHtml.includes("profile fallback"), false);
+});
+
+test("analysis removes model zones and policy walls but retains conditions, provenance and fishing guidance", () => {
+  const h = harness();
+  const spot = {
+    name: "Fixture coast", rank: 1, distanceKm: 0.4, score: 39, recommendationStatus: "unverified", conditionsStatus: "adverse",
+    actionabilityLabel: "Check locally", recommendationReasons: ["Unique safety warning"], warnings: ["Unique safety warning", "Access warning"],
+    access: { rating: "unknown", notes: ["Access warning"] },
+    weather: { confidence: "low", pressureTrend: "rising", airTemperatureC: 23.4, windSpeedKmh: 17.8, validAt: "2026-09-07T10:00:00Z", fetchedAt: "2026-09-07T09:01:00Z", sourceCoordinates: { lat: 36.123, lon: 22.456 }, temporalMode: "forecast" },
+    marine: { confidence: "low", waveHeightM: 1.2, validAt: "2026-09-07T11:00:00Z", fetchedAt: "2026-09-07T09:02:00Z", sourceCoordinates: { lat: 36.789, lon: 22.987 }, temporalMode: "forecast" },
+    depth: { confidence: "low", hasNearbyWater: true, closestFishableDepthM: 4, maxDepthM: 12, sampleCount: 3, castingProfile: [{ distanceM: 60, depthM: 4 }, { distanceM: 100, depthM: 8 }, { distanceM: 150, depthM: 12 }] },
+    techniqueDepthRange: { label: "Unique technique depth range" }, depthStyle: "Gentle slope", seabedLabel: "Unknown seabed", snagRiskLabel: "Unknown snags", depthSourceLabel: "Depth provider", confidenceLabel: "Coarse coverage", typicalSpecies: ["Backend species"], conditionsLabel: "Repeated full conditions summary",
+    breakdown: [{ key: "conditions", label: "Conditions factor", score: 20, weight: 30, explanation: "Repeated full conditions summary" }, { key: "depth", label: "Depth factor", score: 40, weight: 50, explanation: "Unique technique depth range" }, { key: "technique", label: "Technique factor", score: 60, weight: 20, explanation: "Unique scoring rationale" }, { key: "access", label: "Access factor", score: 10, weight: 5, explanation: "Access warning" }],
+  };
+  const response = { mode: "nearby", intent: { technique: "spinning" }, spots: [spot], warnings: ["Unique safety warning", "Response-only warning"], attributions: ["Provider attribution"], conditionsScope: "regional", conditionsAt: "2026-09-07T12:00:00Z", generatedAt: "2026-09-07T09:03:00Z" };
+  const original = JSON.stringify(response);
+  const render = () => renderToStaticMarkup(React.createElement(h.analysis.SpotAnalysis, { spot, response, snapshot: true }));
+  for (const mode of ["nearby", "point"]) {
+    response.mode = mode;
+    if (mode === "point") response.pointAnalysis = { requestedPoint: { lat: 36, lon: 22 }, analyzedPoint: { lat: 36.001, lon: 22.001 }, adjustedToWater: true, waterDistanceM: 120, gpsAccuracyM: 8, approximateZone: { label: "Removed model zone", distanceRangeM: [60, 150], depthRangeM: [4, 12] } };
+    const html = render();
+    for (const text of ["Unique technique depth range", "23.4°C", "17.8km/h", "1.2μ", "Profile bait", "Profile rig", "Profile time", "Profile casting guidance", "Backend species", "Ιστορικό στιγμιότυπο,", "Depth provider", "Πηγές δεδομένων", "Δυσμενείς καιρικές ή θαλάσσιες συνθήκες", "Καιρός", "Θάλασσα"]) assert.equal(html.split(text).length - 1, 1, text);
+    for (const text of ["Removed model zone", "Ζώνη μοντέλου", "χονδρική ζώνη", "Προειδοποιήσεις", "Μη επαληθευμένο", "Check locally", "Unique safety warning", "Access warning", "Response-only warning", "Unique scoring rationale"]) assert.ok(!html.includes(text), text);
+    assert.ok(html.includes("Μη διαθέσιμο"));
+    assert.ok(!html.includes(spot.conditionsLabel));
+    for (const date of [spot.weather.validAt, spot.weather.fetchedAt, spot.marine.validAt, spot.marine.fetchedAt, response.conditionsAt, response.generatedAt]) assert.ok(html.includes(h.drafts.displayDate(date)), date);
+    for (const text of ["36.123, 22.456", "36.789, 22.987", 'role="img"', '<summary class="cursor-pointer py-2 font-bold">Τιμές δειγμάτων</summary>', 'scope="col"']) assert.ok(html.includes(text), text);
+    assert.ok(!html.includes("<details open"));
+  }
+  response.mode = "nearby"; delete response.pointAnalysis;
+  assert.equal(JSON.stringify(response), original, "Rendering must not mutate data used for trip snapshots");
+  spot.breakdown[0].explanation = "Distinct conditions rationale";
+  spot.depth.castingProfile = []; spot.depth.confidence = "none";
+  assert.ok(!render().includes("Distinct conditions rationale"));
+  assert.ok(render().includes("Δεν υπάρχει διαθέσιμο προφίλ βάθους."));
+  assert.ok(render().includes("Μερική κάλυψη δεδομένων"));
+  const limitation = "Το DTM δεν μετρά σύσταση βυθού ή σκαλώματα και δεν είναι κατάλληλο για ναυσιπλοΐα.";
+  spot.warnings.push(limitation); response.warnings.push(limitation);
+  assert.equal(render().split(limitation).length - 1, 0);
+  const warnings = renderToStaticMarkup(React.createElement(h.analysis.ResultNotices, { spot, response }));
+  assert.ok(!warnings.includes(limitation));
+  assert.ok(!warnings.includes("Unique safety warning"));
+  spot.conditionsStatus = "unknown";
+  assert.ok(!render().includes("Δυσμενείς καιρικές"));
+  spot.conditionsStatus = "no-adverse-signal";
+  assert.ok(!render().includes("Δυσμενείς καιρικές"));
+  const failure = "Η υπηρεσία marine δεν είναι προσωρινά διαθέσιμη.";
+  response.warnings.push(failure, failure); spot.warnings.push(failure);
+  assert.equal(render().split(failure).length - 1, 1);
+  const empty = renderToStaticMarkup(React.createElement(h.analysis.ResultNotices, { response: { ...response, spots: [] } }));
+  assert.ok(empty.includes("Δεν επιστράφηκαν σημεία"));
+  assert.ok(empty.includes(failure));
+  assert.ok(!empty.includes("Response-only warning"));
 });
 
 test("duplicate bookmark responses preserve the existing server notes rather than replacing them with the form", async () => {
