@@ -74,6 +74,7 @@ function harness(existingLocalStorage) {
     if (id === "@/lib/techniqueProfiles") return { TECHNIQUE_PROFILES: { spinning: { label: "Spinning", species: ["profile fallback"] } } };
     if (id === "@/lib/geo") return { round: (value, digits) => Number(value.toFixed(digits)) };
     if (id === "maplibre-gl") return {};
+    if (id === "./TripPhotoMarker") return {};
     throw new Error(`Unexpected module: ${id}`);
   } };
   vm.runInNewContext(compiledAnalysis, componentContext);
@@ -109,6 +110,7 @@ test("selected map trip shows only its details and offers editing only to its ow
     assert.ok(!html.includes("Unrelated reef"));
     assert.equal(html.includes("Επεξεργασία / πρόχειρο"), viewer?.id === trip.userId);
     assert.ok(!html.includes("datetime-local"), "Details do not mount the editor or create a draft");
+    assert.ok(html.includes("Τοποθεσία στον χάρτη"));
     assert.ok(!html.includes("Διαγραφή"), "Read-only details have no delete action");
   }
   assert.ok(render(undefined, { ...trip, outcome: "zero", fishRecords: [] }).includes("0 ψάρια"));
@@ -117,11 +119,14 @@ test("selected map trip shows only its details and offers editing only to its ow
 
 test("map pins and cleared results preserve camera; selection and explicit recenter preserve zoom", () => {
   const refs = [], dependencies = [], pending = [], camera = [], data = [];
-  let refIndex = 0, effectIndex = 0, recenterKey = 0;
+  let refIndex = 0, effectIndex = 0, stateIndex = 0, recenterKey = 0;
   const map = {
     getSource: (id) => ({ setData: (value) => data.push({ id, value }) }),
     getLayer: () => true,
     setLayoutProperty() {},
+    setFeatureState() {},
+    getCanvas: () => ({ style: {}, focus() {} }),
+    doubleClickZoom: { enable() {} },
     getContainer: () => ({ clientWidth: 1440, clientHeight: 1200 }),
     easeTo: (options) => camera.push(options),
     flyTo: (options) => camera.push(options),
@@ -131,7 +136,7 @@ test("map pins and cleared results preserve camera; selection and explicit recen
   const context = { exports: {}, require: (id) => {
     if (id === "react/jsx-runtime") return jsxRuntime;
     if (id === "react") return {
-      useState: (value) => [value, () => {}],
+      useState: (value) => [stateIndex++ === 0 ? map : value, () => {}],
       useRef: (value) => {
         const index = refIndex++;
         return refs[index] ?? (refs[index] = { current: value });
@@ -143,12 +148,13 @@ test("map pins and cleared results preserve camera; selection and explicit recen
       },
     };
     if (id === "maplibre-gl") return { default: { LngLatBounds: class { extend() {} } } };
+    if (id === "./TripPhotoMarker") return { tripMapPhotos: () => [] };
     if (id === "@/lib/geo") return { round: (value, digits) => Number(value.toFixed(digits)) };
     throw new Error(`Unexpected module: ${id}`);
   } };
   vm.runInNewContext(compiledMap, context);
   const render = (props = {}) => {
-    refIndex = 0; effectIndex = 0;
+    refIndex = 0; effectIndex = 0; stateIndex = 0;
     recenterKey = props.recenterKey ?? recenterKey;
     context.exports.FishingMap({ spots: [], radiusKm: 25, baseLayer: "street", recenterKey, ...props });
     refs[2].current = map; // Supply the map ref without mounting a WebGL canvas.
@@ -178,6 +184,51 @@ test("map pins and cleared results preserve camera; selection and explicit recen
   assert.equal(camera.at(-1).maxZoom, 16, "new analysis fitting must run after selection recentering");
   render();
   assert.equal(camera.length, 4, "clearing analysis must preserve the fitted camera");
+  const tripFocus = { id: "trip", lat: 36.8, lon: 22.6, revision: 1 };
+  render({ tripFocus });
+  assert.deepEqual(Array.from(camera.at(-1).center), [22.6, 36.8]);
+  assert.equal(camera.at(-1).zoom, 14);
+  assert.deepEqual(Array.from(camera.at(-1).offset), [0, 0]);
+  const focusedCount = camera.length;
+  render({ tripFocus });
+  assert.equal(camera.length, focusedCount, "unrelated renders must not refocus a trip");
+  render({ tripFocus: { ...tripFocus, revision: 2 } });
+  assert.equal(camera.length, focusedCount + 1, "the same trip can be explicitly focused again");
+  const repeatedFocus = { ...tripFocus, revision: 3 };
+  render({ tripFocus: repeatedFocus });
+  const beforeRefresh = camera.length;
+  render({ tripFocus: repeatedFocus, trips: [{ ...trips[0], id: "newly-loaded" }] });
+  assert.equal(camera.length, beforeRefresh, "a delayed trip refresh must not override explicit trip focus");
+});
+
+test("map photos include trip and fish images only for owner or explicit public sharing", async () => {
+  const code = ts.transpileModule(await readFile(new URL("../../components/TripPhotoMarker.tsx", import.meta.url), "utf8"), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText;
+  const context = { exports: {}, require: () => ({}) };
+  vm.runInNewContext(code, context);
+  const trip = { userId: "owner", visibility: "public", status: "completed", sharedMediaIds: ["fish"], images: [{ id: "trip" }], fishRecords: [{ images: [{ id: "fish" }, { id: "trip" }] }] };
+  const ids = (value, viewer) => Array.from(context.exports.tripMapPhotos(value, viewer), (image) => image.id);
+  assert.deepEqual(ids(trip, "owner"), ["trip", "fish"]);
+  assert.deepEqual(ids(trip, "other"), ["fish"]);
+  assert.deepEqual(ids(trip), ["fish"]);
+  assert.deepEqual(ids({ ...trip, visibility: "private" }, "other"), []);
+  assert.deepEqual(ids({ ...trip, status: "active" }), []);
+  assert.deepEqual(ids({ ...trip, sharedMediaIds: [] }), []);
+  const effects = [];
+  let removed = false;
+  const map = { getStyle: () => removed ? undefined : { sources: { trips: {} } }, setFeatureState: () => assert.ok(!removed) };
+  const component = { exports: {}, document: { createElement: () => ({}) }, require: (id) => {
+    if (id === "react") return { useState: (value) => [typeof value === "function" ? value() : value, () => {}], useEffect: (effect) => effects.push(effect) };
+    if (id === "react-dom") return { createPortal: () => null };
+    if (id === "react/jsx-runtime") return jsxRuntime;
+    return {};
+  } };
+  vm.runInNewContext(code, component);
+  component.exports.TripPhotoMarker({ map, trip: { ...trip, id: "trip" }, userId: "owner", onSelect() {} });
+  const cleanup = effects[2]();
+  removed = true;
+  assert.doesNotThrow(cleanup, "logout may remove the parent map before photo marker cleanup");
 });
 
 test("password login and restoration use the bearer contract, not username restoration", async () => {

@@ -5,6 +5,8 @@ import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
 import type { FeatureCollection, LineString, Point, Polygon } from "geojson";
 import type { Coordinates, GeocodedLocation, PointAnalysis, RankedSpot, SpotSearchMode } from "@/lib/types";
 import { distanceKm, formatDistanceKm, round } from "@/lib/geo";
+import type { SavedFishingTrip } from "@/lib/types";
+import { TripPhotoMarker, tripMapPhotos } from "./TripPhotoMarker";
 
 export type MapBaseLayer = "street" | "satellite" | "terrain";
 
@@ -12,7 +14,10 @@ interface FishingMapProps {
   location?: GeocodedLocation;
   radiusKm: number;
   spots: RankedSpot[];
-  trips?: TripMapMarker[];
+  trips?: SavedFishingTrip[];
+  userId?: string;
+  selectedTripId?: string;
+  tripFocus?: { id: string; lat: number; lon: number; revision: number };
   selectedSpotId?: string;
   loading: boolean;
   baseLayer: MapBaseLayer;
@@ -46,7 +51,8 @@ const EMPTY_COLLECTION: MapFeatureCollection = {
   features: [],
 };
 
-export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpotId, loading, baseLayer, depthVisible, recenterKey = 0, onMeasureStart, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
+export function FishingMap({ location, radiusKm, spots, trips = [], userId, selectedTripId, tripFocus, selectedSpotId, loading, baseLayer, depthVisible, recenterKey = 0, onMeasureStart, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
+  const [readyMap, setReadyMap] = useState<MapLibreMap>();
   const [measuring, setMeasuring] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<Coordinates[]>([]);
   const measuringRef = useRef(false);
@@ -162,6 +168,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       });
       map.addSource("trips", {
         type: "geojson",
+        promoteId: "id",
         data: EMPTY_COLLECTION,
       });
       map.addSource("spots", {
@@ -423,7 +430,8 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         paint: {
           "circle-radius": 17,
           "circle-color": "#f59e0b",
-          "circle-opacity": 0.26,
+          "circle-opacity": ["case", ["boolean", ["feature-state", "photo"], false], 0, 0.26],
+          "circle-stroke-opacity": ["case", ["boolean", ["feature-state", "photo"], false], 0, 1],
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 2,
         },
@@ -435,6 +443,8 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         source: "trips",
         paint: {
           "circle-radius": 9,
+          "circle-opacity": ["case", ["boolean", ["feature-state", "photo"], false], 0, 1],
+          "circle-stroke-opacity": ["case", ["boolean", ["feature-state", "photo"], false], 0, 1],
           "circle-color": "#d97706",
           "circle-stroke-color": "#ffffff",
           "circle-stroke-width": 3,
@@ -519,6 +529,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       map.on("mouseleave", "trips-circle", hidePointer);
       map.on("mouseleave", "trips-halo", hidePointer);
       map.on("mouseleave", "trips-label", hidePointer);
+      setReadyMap(map);
     });
 
     mapRef.current = map;
@@ -610,7 +621,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
       source?.setData(toTripCollection(validTrips));
 
       const fitKey = tripFitKey(validTrips);
-      if (!location && !pickedPoint && validTrips.length > 0 && lastTripFitKeyRef.current !== fitKey) {
+      if (!tripFocus && !location && !pickedPoint && validTrips.length > 0 && lastTripFitKeyRef.current !== fitKey) {
         fitTripMarkers(map, validTrips);
       }
       lastTripFitKeyRef.current = fitKey;
@@ -624,7 +635,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
         map.off("load", update);
       };
     }
-  }, [location, pickedPoint, trips]);
+  }, [location, pickedPoint, trips, tripFocus]);
 
   useEffect(() => {
     const recenterRequested = recenterKey !== lastRecenterKeyRef.current;
@@ -728,6 +739,14 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
     }
   }, [location, mode, pointAnalysis, radiusKm, selectedSpotId, spots]);
 
+  // Explicit journal navigation wins over automatic result/trip framing.
+  useEffect(() => {
+    if (!tripFocus || !readyMap || !isValidTripMarker(tripFocus)) return;
+    toggleMeasurement(false);
+    readyMap.easeTo({ center: [tripFocus.lon, tripFocus.lat], zoom: 14, padding: { top: 0, bottom: 0, left: 0, right: 0 }, offset: [0, 0], duration: 500 });
+    readyMap.getCanvas().focus({ preventScroll: true });
+  }, [tripFocus, readyMap]);
+
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -757,6 +776,7 @@ export function FishingMap({ location, radiusKm, spots, trips = [], selectedSpot
   return (
     <div className="relative h-full min-h-[100svh] w-full">
       <div ref={containerRef} className="h-full w-full" aria-label="Χάρτης ψαρότοπων" />
+      {readyMap && trips.filter((trip) => isValidTripMarker(trip) && tripMapPhotos(trip, userId).length > 0).map((trip) => <TripPhotoMarker key={trip.id} map={readyMap} trip={trip} userId={userId} selected={trip.id === selectedTripId} onSelect={() => { if (!measuringRef.current) onSelectTripRef.current?.(trip.id); }} />)}
       <div className="measure-tools" data-active={measuring} aria-label="Μέτρηση απόστασης">
         <button className={measuring ? "ui-primary" : "ui-secondary"} aria-pressed={measuring} onClick={() => toggleMeasurement(!measuring)}>{measuring ? "Έξοδος μέτρησης" : "Μέτρηση"}</button>
         {measuring && <div className="measure-status"><p role="status" aria-live="polite">{measurementLabel ? `Απόσταση: ${measurementLabel}` : measurePoints.length ? "Πάτησε το δεύτερο σημείο" : "Πάτησε το πρώτο σημείο"}</p><p className="ui-help">Ευθεία απόσταση, όχι διαδρομή ή οδηγία πλοήγησης.</p><button className="ui-secondary" disabled={!measurePoints.length} onClick={() => setMeasurePoints([])}>Καθαρισμός</button></div>}
@@ -799,6 +819,7 @@ function toTripCollection(trips: TripMapMarker[]): MapFeatureCollection {
     type: "FeatureCollection",
     features: trips.map((trip) => ({
       type: "Feature",
+      id: trip.id,
       geometry: {
         type: "Point",
         coordinates: [trip.lon, trip.lat],
@@ -814,7 +835,7 @@ function toTripCollection(trips: TripMapMarker[]): MapFeatureCollection {
   };
 }
 
-function isValidTripMarker(trip: TripMapMarker): boolean {
+function isValidTripMarker(trip: Coordinates): boolean {
   return Number.isFinite(trip.lat) && Number.isFinite(trip.lon) && trip.lat >= -90 && trip.lat <= 90 && trip.lon >= -180 && trip.lon <= 180;
 }
 

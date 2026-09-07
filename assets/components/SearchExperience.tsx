@@ -40,6 +40,7 @@ export function SearchExperience() {
   const [trips, setTrips] = useState<SavedFishingTrip[]>([]);
   const [activeTrip, setActiveTrip] = useState<SavedFishingTrip | null>(null);
   const [selectedTripId, setSelectedTripId] = useState<string>();
+  const [tripFocus, setTripFocus] = useState<{ id: string; lat: number; lon: number; revision: number }>();
   const [destination, setDestination] = useState<TripDestination>();
   const [libraryDestination, setLibraryDestination] = useState<TripDestination>();
   const [error, setError] = useState<string>();
@@ -75,6 +76,7 @@ export function SearchExperience() {
     if (reason === "expired" && session.user) writeContinuation(session.user.id, continuation);
     searchSequence.current += 1; setLoading(false); setTripsLoading(false); setTrips([]); setActiveTrip(null); setSelectedTripId(undefined); setResumedAccount(undefined);
     setSaveHistory(false); setError(undefined); setMessage(undefined);
+    setTripFocus(undefined);
     // Lock private origins as well as forms. A genuinely new guest choice can cross login.
     if (session.user || !guestIntent.current) {
       setResponse(undefined); setInfoOpen(false); setSnapshot(false); setSelectedSpotId(undefined);
@@ -144,6 +146,14 @@ export function SearchExperience() {
     setActiveTrip((current) => trip.status === "active" ? trip : current?.id === trip.id ? null : current);
   }
 
+  function showTripOnMap(trip: SavedFishingTrip) {
+    if (session.user && verifiedUserId() !== session.user.id) return;
+    selectTrip(trip.id);
+    searchSequence.current += 1; setLoading(false);
+    setPanelOpen(false); setInfoOpen(false); setSheetSize("collapsed"); setLayersOpen(false);
+    setTripFocus((previous) => ({ id: trip.id, lat: trip.lat, lon: trip.lon, revision: (previous?.revision ?? 0) + 1 }));
+  }
+
   async function runSearch(mode: SpotSearchMode = "nearby", supplied?: SpotsApiRequest) {
     const sequence = ++searchSequence.current;
     setError(undefined); setMessage(undefined);
@@ -207,7 +217,7 @@ export function SearchExperience() {
   }
 
   return <main className="relative h-[100svh] w-full overflow-hidden bg-ink text-ink">
-    <FishingMap key={session.user?.id ?? "guest"} location={response?.location} radiusKm={response?.intent.radiusKm ?? radiusKm} spots={response?.spots ?? []} selectedSpotId={selectedSpot?.id} onSelectSpot={(id) => { setSelectedSpotId(id); setInfoOpen(true); setSheetSize("half"); setPanelOpen(false); setAuthOpen(false); }} loading={loading || gpsLoading} baseLayer={baseLayer} depthVisible={depthVisible} recenterKey={recenterKey} onMeasureStart={() => { setPanelOpen(false); setSheetSize("collapsed"); setLayersOpen(false); }} pickedPoint={pickedPoint} mode={response?.mode} pointAnalysis={response?.pointAnalysis} trips={trips} onSelectTrip={selectTrip} onPickPoint={pickPoint} />
+    <FishingMap key={session.user?.id ?? "guest"} userId={session.user?.id} selectedTripId={selectedTripId} tripFocus={tripFocus} location={response?.location} radiusKm={response?.intent.radiusKm ?? radiusKm} spots={response?.spots ?? []} selectedSpotId={selectedSpot?.id} onSelectSpot={(id) => { setSelectedSpotId(id); setInfoOpen(true); setSheetSize("half"); setPanelOpen(false); setAuthOpen(false); }} loading={loading || gpsLoading} baseLayer={baseLayer} depthVisible={depthVisible} recenterKey={recenterKey} onMeasureStart={() => { setPanelOpen(false); setSheetSize("collapsed"); setLayersOpen(false); }} pickedPoint={pickedPoint} mode={response?.mode} pointAnalysis={response?.pointAnalysis} trips={activeTrip && !trips.some((trip) => trip.id === activeTrip.id) ? [...trips, activeTrip] : trips} onSelectTrip={selectTrip} onPickPoint={pickPoint} />
     <div className="pointer-events-none absolute inset-x-0 top-0 z-30 p-3 sm:p-4"><nav aria-label="Κύρια πλοήγηση" className="workflow-toolbar pointer-events-auto mx-auto flex max-w-[1560px] items-center gap-2 pb-1">
       <button className="ui-secondary px-3 py-3 shadow-glow" onClick={() => { if (panelOpen && panel === "search") setPanelOpen(false); else openPanel("search"); }}>{panelOpen && panel === "search" ? "Κλείσιμο" : "Αναζήτηση"}</button>
       <button className="ui-secondary px-3 py-3 shadow-glow" onClick={() => openPanel("trips")}>Εξορμήσεις</button><button className="ui-secondary px-3 py-3 shadow-glow" onClick={() => openPanel("library")}>Βιβλιοθήκη</button>
@@ -248,7 +258,7 @@ export function SearchExperience() {
     </section>}
     {response && selectedSpot && infoOpen && !authOpen && <div className={`map-analysis sheet-${sheetSize}`}><SpotAnalysis spot={selectedSpot} response={response} snapshot={snapshot} onTrip={() => newTrip(currentDestination(selectedSpot))} onSavePlace={() => saveCurrentPlace(currentDestination(selectedSpot))} onRecheck={() => { const point = currentDestination(selectedSpot); if (point) recheck(point); }} onClose={() => setInfoOpen(false)} /></div>}
 
-    {panelOpen && panel === "trips" && !authOpen && <><TripJournal key={session.user?.id ?? "guest"} user={session.user} trips={trips} activeTrip={activeTrip} destination={destination} selectedTripId={selectedTripId} onSelectTrip={selectTrip} onDestination={newTrip} onRecheck={recheck} onUpdated={updatedTrip} onDeleted={(id) => { setTrips((items) => items.filter((trip) => trip.id !== id)); setActiveTrip((current) => current?.id === id ? null : current); if (selectedTripId === id) setSelectedTripId(undefined); }} onLogin={() => setAuthOpen(true)} onClose={() => setPanelOpen(false)} />{(tripsError || tripsLoading) && <div className="absolute inset-x-3 top-[4.8rem] z-50 mx-auto max-w-xl"><p role="status" className={tripsError ? "ui-warning" : "ui-notice"}>{tripsLoading ? "Φόρτωση εξορμήσεων..." : tripsError}{tripsError && <button className="ui-secondary ml-2" onClick={() => setTripRevision((n) => n + 1)}>Ανανέωση</button>}</p></div>}</>}
+    {panelOpen && panel === "trips" && !authOpen && <><TripJournal key={session.user?.id ?? "guest"} user={session.user} trips={trips} activeTrip={activeTrip} destination={destination} selectedTripId={selectedTripId} onSelectTrip={selectTrip} onShowOnMap={showTripOnMap} onDestination={newTrip} onRecheck={recheck} onUpdated={updatedTrip} onDeleted={(id) => { setTrips((items) => items.filter((trip) => trip.id !== id)); setActiveTrip((current) => current?.id === id ? null : current); if (selectedTripId === id) setSelectedTripId(undefined); }} onLogin={() => setAuthOpen(true)} onClose={() => setPanelOpen(false)} />{(tripsError || tripsLoading) && <div className="absolute inset-x-3 top-[4.8rem] z-50 mx-auto max-w-xl"><p role="status" className={tripsError ? "ui-warning" : "ui-notice"}>{tripsLoading ? "Φόρτωση εξορμήσεων..." : tripsError}{tripsError && <button className="ui-secondary ml-2" onClick={() => setTripRevision((n) => n + 1)}>Ανανέωση</button>}</p></div>}</>}
     {panelOpen && panel === "library" && !authOpen && <PrivateLibrary key={session.user?.id ?? "guest"} user={session.user} destination={libraryDestination} onTrip={newTrip} onRecheck={recheck} onScan={showScan} onSearch={loadRequest} onLogin={() => setAuthOpen(true)} onClose={() => setPanelOpen(false)} />}
   </main>;
 }

@@ -12,9 +12,10 @@ export function tripOutcomeLabel(trip: SavedFishingTrip): string {
   return `${trip.fishRecords.reduce((sum, fish) => sum + fish.count, 0)} ψάρια καταγεγραμμένα`;
 }
 
-export function TripJournal({ user, trips, activeTrip, destination, selectedTripId, onSelectTrip, onDestination, onRecheck, onUpdated, onDeleted, onLogin, onClose }: {
+export function TripJournal({ user, trips, activeTrip, destination, selectedTripId, onSelectTrip, onShowOnMap, onDestination, onRecheck, onUpdated, onDeleted, onLogin, onClose }: {
   user?: ApiUser; trips: SavedFishingTrip[]; activeTrip: SavedFishingTrip | null; destination?: TripDestination; selectedTripId?: string;
   onSelectTrip: (id?: string) => void; onDestination: (point: TripDestination) => void; onRecheck: (point: TripDestination) => void;
+  onShowOnMap: (trip: SavedFishingTrip) => void;
   onUpdated: (trip: SavedFishingTrip) => void; onDeleted: (id: string) => void; onLogin: () => void; onClose: () => void;
 }) {
   const [error, setError] = useState<string>();
@@ -47,6 +48,7 @@ export function TripJournal({ user, trips, activeTrip, destination, selectedTrip
     {selected && (!editable || editingTripId !== selected.id) && <article className="mt-4 space-y-2 rounded-2xl border border-slate-200 p-3" aria-label="Λεπτομέρειες εξόρμησης">
       <TripDetails trip={selected} />
       <div className="flex flex-wrap gap-2">
+        <button className="ui-secondary" onClick={() => onShowOnMap(selected)}>Τοποθεσία στον χάρτη</button>
         {editable && editingTripId !== selected.id && <button className="ui-primary" onClick={() => editTrip(selected.id)}>Επεξεργασία / πρόχειρο</button>}
         <button className="ui-secondary" onClick={() => { setEditingTripId(undefined); onSelectTrip(undefined); }}>Όλες οι εξορμήσεις</button>
       </div>
@@ -61,6 +63,7 @@ export function TripJournal({ user, trips, activeTrip, destination, selectedTrip
         <TripDetails trip={trip} />
         <div className="flex flex-wrap gap-2">
           <button className="ui-secondary" onClick={() => { setEditingTripId(undefined); onSelectTrip(trip.id); }}>Λεπτομέρειες</button>
+          <button className="ui-secondary" onClick={() => onShowOnMap(trip)}>Τοποθεσία στον χάρτη</button>
           {trip.userId === user?.id && <button className="ui-secondary" onClick={() => editTrip(trip.id)}>Επεξεργασία / πρόχειρο</button>}
           <button className="ui-secondary" onClick={() => onRecheck({ name: trip.locationName, lat: trip.lat, lon: trip.lon, technique: trip.technique })}>Νέος έλεγχος συνθηκών</button>
           <button className="ui-secondary" onClick={() => onDestination({ name: trip.locationName, lat: trip.lat, lon: trip.lon, technique: trip.technique })}>Νέα εξόρμηση εδώ</button>

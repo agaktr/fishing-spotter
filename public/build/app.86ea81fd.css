@@ -1409,6 +1409,22 @@ main:has(.auth-panel, .trip-journal) .measure-tools { display: none; }
   html { scroll-behavior: auto; }
   *, *::before, *::after { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; }
 }
+.trip-photo-pin {
+  position: relative;
+  display: block;
+  width: 56px;
+  height: 64px;
+  padding: 3px 3px 11px;
+  background: #d97706;
+  clip-path: polygon(0 0, 100% 0, 100% 82%, 64% 82%, 50% 100%, 36% 82%, 0 82%);
+  border-radius: 12px 12px 0 0;
+  visibility: hidden;
+  cursor: pointer;
+}
+.trip-photo-pin[data-ready="true"] { visibility: visible; }
+.trip-photo-pin[aria-pressed="true"], .trip-photo-pin:focus-visible { background: #09202a; }
+.trip-photo-pin img { width: 100%; height: 100%; -o-object-fit: cover; object-fit: cover; border-radius: 9px; }
+.trip-photo-count { position: absolute; top: 3px; right: 3px; min-width: 20px; padding: 2px 4px; border-radius: 0 8px 0 8px; background: #09202a; color: white; font-size: 11px; font-weight: 900; }
 @media (min-width: 640px){
 
   .sm\:p-4{
