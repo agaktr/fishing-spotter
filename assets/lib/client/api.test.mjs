@@ -28,6 +28,7 @@ const compiledMap = ts.transpileModule(await readFile(new URL("../../components/
 const compiledJournal = ts.transpileModule(await readFile(new URL("../../components/TripJournal.tsx", import.meta.url), "utf8"), {
   compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, jsx: ts.JsxEmit.ReactJSX },
 }).outputText;
+const compiledConditions = ts.transpileModule(await readFile(new URL("../../components/TripConditions.tsx", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, jsx: ts.JsxEmit.ReactJSX } }).outputText;
 const historyContext = { exports: {} };
 vm.runInNewContext(ts.transpileModule(await readFile(new URL("./tripHistory.ts", import.meta.url), "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText, historyContext);
 const user = { id: "owner", username: "owner", displayName: "Owner", role: "user", active: true };
@@ -67,6 +68,8 @@ function harness(existingLocalStorage) {
   vm.runInNewContext(compiledDrafts, draftContext);
   const modelContext = { ...context, exports: {}, require: () => draftContext.exports };
   vm.runInNewContext(compiledTripDraft, modelContext);
+  const conditionsContext = { exports: {}, require: id => id === "react/jsx-runtime" ? jsxRuntime : draftContext.exports };
+  vm.runInNewContext(compiledConditions, conditionsContext);
   const scanContext = { exports: {} };
   vm.runInNewContext(compiledScan, scanContext);
   const componentContext = { ...context, exports: {}, require: (id) => {
@@ -77,6 +80,7 @@ function harness(existingLocalStorage) {
     if (id === "@/lib/geo") return { round: (value, digits) => Number(value.toFixed(digits)) };
     if (id === "maplibre-gl") return {};
     if (id === "./TripPhotoMarker") return {};
+    if (id === "./TripConditions") return conditionsContext.exports;
     throw new Error(`Unexpected module: ${id}`);
   } };
   vm.runInNewContext(compiledAnalysis, componentContext);
@@ -118,10 +122,10 @@ test("journal hides draft management, recovers forms quietly and restricts editi
     assert.ok(!/πρόχειρ|προχείρ|Ιδιωτική/.test(html));
     assert.ok(!html.includes("datetime-local"), "Details do not mount the editor or create a draft");
     assert.ok(html.includes("Τοποθεσία στον χάρτη"));
-    assert.ok(!html.includes("Διαγραφή"), "Read-only details have no delete action");
+    assert.equal(html.includes("Διαγραφή εξόρμησης"), viewer?.id === trip.userId, "Only owners have a delete action inside the details menu");
   }
-  assert.ok(render(undefined, { ...trip, outcome: "zero", fishRecords: [] }).includes("0 ψάρια"));
-  assert.ok(render(undefined, { ...trip, outcome: "not-recorded", fishRecords: [] }).includes("Αποτέλεσμα μη καταγεγραμμένο"));
+  assert.ok(render(undefined, { ...trip, outcome: "zero", fishRecords: [] }).includes("Δεν πιάσαμε ψάρια"));
+  assert.ok(render(undefined, { ...trip, outcome: "not-recorded", fishRecords: [] }).includes("Δεν θυμάμαι / Δεν σημείωσα"));
   await h.login();
   const destination = { name: "Recovery cove", lat: 36.76, lon: 22.56, technique: "spinning" };
   const subject = "new:spinning:36.76:22.56";
@@ -138,9 +142,26 @@ test("journal hides draft management, recovers forms quietly and restricts editi
   assert.equal(h.drafts.readDraft(user.id, subject).notes, draft.notes);
   assert.equal(draft.outcome, "zero");
   assert.ok(editor.includes('<option value="zero" selected="">'));
-  assert.ok(!editor.includes("Προσθήκη ψαριού / ομοιογενούς ομάδας"));
+  const outcomeSelect = editor.match(/Πιάσαμε τίποτα;<select[^>]*>(.*?)<\/select>/)[1];
+  assert.equal(outcomeSelect, '<option value="zero" selected="">Δεν πιάσαμε ψάρια</option><option value="recorded">Πιάσαμε ψάρια</option><option value="not-recorded">Δεν θυμάμαι / Δεν σημείωσα</option>');
+  assert.ok(!editor.includes("Επίλεξε ρητά"));
+  h.drafts.writeDraft(user.id, subject, { ...draft, outcome: "recorded" });
+  const fishEditor = journal({ destination });
+  assert.ok(fishEditor.includes("Προσθήκη ψαριού"));
+  assert.match(fishEditor, /Πιάσαμε τίποτα;<select[^>]*>.*?<\/select><\/label><section aria-label="Ψάρια"/);
+  assert.ok(fishEditor.indexOf('aria-label="Ψάρια"') < fishEditor.indexOf("Σημειώσεις<textarea"));
+  assert.ok(!fishEditor.includes("Κάθε ομάδα έχει") && !fishEditor.includes("Προαιρετική προσπάθεια."));
+  assert.match(fishEditor, /<details[^>]*><summary[^>]*>Χρόνος ψαρέματος και παρέα \(προαιρετικά\)<\/summary>/);
+  assert.match(fishEditor, /<details[^>]*><summary[^>]*>Μετρήσεις, δόλωμα και σημειώσεις \(προαιρετικά\)<\/summary>/);
+  assert.throws(() => h.tripDraft.tripUpdateFromDraft({ ...draft, recordingMode: "historical", tripDate: "2025-06-01T10:00:00", endedAt: "2025-06-01T12:00:00", outcome: "recorded" }), /Πρόσθεσε ψάρι/);
+  assert.ok(!editor.includes("Προσθήκη ψαριού"));
+  h.drafts.writeDraft(user.id, subject, { ...draft, recordingMode: "historical" });
+  const historicalEditor = journal({ destination });
+  assert.match(historicalEditor, /<details[^>]*><summary[^>]*>Χρόνος ψαρέματος και παρέα \(προαιρετικά\)<\/summary><label[^>]*>Λήξη \(προαιρετικά\)<input[^>]*value=""/);
+  const optionalEnd = historicalEditor.match(/Λήξη \(προαιρετικά\)<input([^>]*)/)[1];
+  assert.ok(!optionalEnd.includes("required"));
   for (const status of ["active", "completed"]) {
-    for (const outcome of ["zero", "recorded", "not-recorded"]) {
+    for (const outcome of ["zero", "recorded", "not-recorded", ""]) {
       assert.equal(h.tripDraft.initialDraft({ ...trip, status, outcome }).outcome, outcome);
     }
   }
@@ -148,10 +169,12 @@ test("journal hides draft management, recovers forms quietly and restricts editi
     const restored = { ...draft, outcome, fishRecords: trip.fishRecords, fish: { ...draft.fish, species: "Pending catch" } };
     h.drafts.writeDraft(user.id, subject, restored);
     const html = journal({ destination });
-    assert.equal(html.includes("Προσθήκη ψαριού / ομοιογενούς ομάδας"), outcome !== "zero");
+    assert.equal(html.includes("Προσθήκη ψαριού"), outcome !== "zero");
+    assert.ok(html.indexOf("3x Sea bass") < html.indexOf("Σημειώσεις<textarea"));
     assert.ok(html.includes("3x Sea bass"), "Existing records remain accessible for every outcome");
     assert.equal(h.drafts.readDraft(user.id, subject).fish.species, "Pending catch");
     assert.equal(h.drafts.readDraft(user.id, subject).outcome, outcome);
+    assert.equal(html.includes('<option value="" disabled="" selected="">Διάλεξε αν πιάσαμε ψάρια</option>'), outcome === "");
     if (outcome === "zero") {
       assert.ok(html.includes("Οι εγγραφές δεν διαγράφηκαν"));
       assert.throws(() => h.tripDraft.tripUpdateFromDraft(restored), /Υπάρχουν ψάρια/);
@@ -174,6 +197,182 @@ test("journal hides draft management, recovers forms quietly and restricts editi
   assert.ok(storedHtml.includes("24,6"));
   assert.ok(!storedHtml.includes("18,7") && !storedHtml.includes("0,45"), "Stored trips never fall back to a different destination snapshot");
   assert.equal((storedHtml.match(/aria-label="Συνθήκες εξόρμησης"/g) ?? []).length, 1);
+  h.drafts.removeDraft(user.id, subject);
+  const quick = journal({ destination });
+  assert.ok(quick.includes('aria-label="Γρήγορη έναρξη"'));
+  assert.ok(quick.includes("Έναρξη ψαρέματος") && quick.includes("Προσθήκη παλιότερης εξόρμησης"));
+  assert.ok(!quick.includes("datetime-local") && !quick.includes("Φίλτρα ιστορικού"));
+  const legacyStartDraft = { ...h.tripDraft.initialDraft(undefined, destination), tripDate: "2026-08-01T08:00:00" };
+  delete legacyStartDraft.fullEntry;
+  h.drafts.writeDraft(user.id, subject, legacyStartDraft);
+  const recoveredStart = journal({ destination });
+  assert.ok(recoveredStart.includes('value="2026-08-01T08:00:00"') && !recoveredStart.includes('aria-label="Γρήγορη έναρξη"'), "A pre-redesign draft's actual start is not overwritten by quick start");
+  assert.match(history, /<details[^>]*><summary>Φίλτρα ιστορικού/);
+  assert.ok(!history.includes("Διαγραφή") && !history.includes("Νέος έλεγχος συνθηκών"));
+  const active = { ...trip, status: "active", technique: "spinning", recordingMode: "live", lat: 36.76, lon: 22.56 };
+  const workspace = journal({ selectedTripId: active.id, activeTrip: active, trips: [] });
+  assert.ok(workspace.includes('aria-label="Ενεργή εξόρμηση"'));
+  assert.ok(workspace.includes("+ Ψάρι") && workspace.includes("Τέλος ψαρέματος"));
+  assert.ok(!workspace.includes('aria-label="Λεπτομέρειες εξόρμησης"'), "Continue resolves the editor without another edit click");
+});
+
+test("fish-only patches and rebasing preserve unrelated local edits, remote catches and media", () => {
+  const h = harness();
+  const fish = (id, notes = "") => ({ id, species: "Bass", count: 1, notes, released: false, images: [] });
+  const base = { ...legacyTrip, fishRecords: [fish("edited"), fish("removed"), fish("untouched")] };
+  const draft = { ...h.tripDraft.initialDraft(base), notes: "Do not submit", fishingMinutes: "30", endedAt: "", fishRecords: [fish("edited", "Local edit"), fish("untouched")] };
+  const remote = { ...base, notes: "Remote notes", fishRecords: [...base.fishRecords, fish("remote")] };
+  const record = fish("new-catch");
+  const fields = h.tripDraft.fishOnlyUpdate(remote, record, null);
+  assert.deepEqual(Object.keys(fields).sort(), ["fishRecords", "outcome"]);
+  assert.equal(fields.fishRecords.find((fish) => fish.id === "edited").notes, "");
+  assert.ok(fields.fishRecords.some((fish) => fish.id === "removed"), "An unrelated pending deletion is not saved by Add fish");
+  const saved = { ...remote, ...fields };
+  saved.fishRecords.find((fish) => fish.id === "untouched").images = [{ id: "remote-photo" }];
+  const next = h.tripDraft.draftAfterFishSave(draft, base, saved, record.id);
+  assert.equal(next.notes, draft.notes);
+  assert.equal(next.fishingMinutes, "30");
+  assert.equal(next.fishRecords.find((fish) => fish.id === "edited").notes, "Local edit");
+  assert.ok(!next.fishRecords.some((fish) => fish.id === "removed"));
+  assert.ok(next.fishRecords.some((fish) => fish.id === "remote"));
+  assert.equal(next.fishRecords.find((fish) => fish.id === "untouched").images[0].id, "remote-photo");
+  assert.equal(next.fish.species, "");
+  const afterReload = h.tripDraft.draftAfterFishSave(JSON.parse(JSON.stringify(draft)), remote, saved, record.id);
+  assert.ok(afterReload.fishRecords.some((fish) => fish.id === "remote"), "Reload must not mistake newly loaded remote catches for local deletions");
+  assert.ok(!afterReload.fishRecords.some((fish) => fish.id === "removed"), "Explicit pending deletions still survive reload");
+  assert.equal(afterReload.fishRecordsBase.length, saved.fishRecords.length);
+});
+
+test("catch retries keep stable IDs and reject concurrent target edits or deletions", () => {
+  const h = harness();
+  const record = { id: "stable", species: "Bass", count: 1, released: false, images: [] };
+  const saved = { ...legacyTrip, fishRecords: [{ ...record, images: [{ id: "keep" }] }] };
+  const retry = h.tripDraft.fishOnlyUpdate(saved, record, null);
+  assert.equal(retry.fishRecords.length, 1);
+  assert.equal(retry.fishRecords[0].images[0].id, "keep");
+  assert.throws(() => h.tripDraft.fishOnlyUpdate({ ...saved, fishRecords: [{ ...record, count: 5 }] }, { ...record, count: 2 }, record), /άλλαξε σε άλλη συσκευή/);
+  assert.throws(() => h.tripDraft.fishOnlyUpdate({ ...saved, fishRecords: [] }, { ...record, count: 2 }, record), /άλλαξε σε άλλη συσκευή/);
+});
+
+test("catch saves rebase untouched scalars from the original baseline, including after reload", () => {
+  const h = harness();
+  const base = { ...legacyTrip, status: "active", recordingMode: "live", outcome: "zero", notes: "original", fishRevision: "a".repeat(64) };
+  const pending = h.tripDraft.initialDraft(base);
+  const fish = { id: "saved-catch", species: "Bass", count: 1, released: false, images: [] };
+  const saved = { ...base, notes: "external note", tripDate: "2025-06-01T09:00:00Z", endedAt: "2025-06-01T12:00:00Z", fishingMinutes: 80, anglerCount: 3, conditionsRecordedAt: "2025-06-01T10:30:00Z", fishRecords: [fish], outcome: "recorded", fishRevision: "b".repeat(64) };
+  const next = h.tripDraft.draftAfterFishSave(JSON.parse(JSON.stringify(pending)), saved, saved, fish.id);
+  for (const key of ["notes", "tripDate", "endedAt", "fishingMinutes", "anglerCount", "conditionsRecordedAt", "outcome"]) assert.equal(next[key], h.tripDraft.initialDraft(saved)[key], key);
+  const finish = h.tripDraft.tripUpdateFromDraft({ ...next, completing: true }, saved).fields;
+  assert.deepEqual(Object.keys(finish).sort(), ["status", "visibility"]);
+  assert.equal(finish.status, "completed");
+  const local = { ...pending, notes: "local note", fishingMinutes: "30", anglerCount: "2", tripDate: "2025-06-01T08:00:00" };
+  const dirty = h.tripDraft.draftAfterFishSave(local, base, saved, fish.id);
+  for (const key of ["notes", "fishingMinutes", "anglerCount", "tripDate"]) assert.equal(dirty[key], local[key], key);
+  const fields = h.tripDraft.tripUpdateFromDraft(dirty, saved).fields;
+  assert.equal(fields.notes, "local note");
+  assert.equal(fields.fishingMinutes, 30);
+  assert.equal(fields.anglerCount, 2);
+  assert.equal(Object.hasOwn(fields, "endedAt"), false);
+  assert.equal(Object.hasOwn(fields, "fishRecords"), false);
+});
+
+test("all fish array updates use their matching revision; unchanged arrays and scalars are omitted", () => {
+  const h = harness();
+  const fish = { id: "one", species: "Bass", count: 1, released: false, images: [] };
+  const base = { ...legacyTrip, outcome: "recorded", fishRecords: [fish], fishRevision: "a".repeat(64) };
+  const original = h.tripDraft.initialDraft(base);
+  const latest = { ...base, notes: "external notes", fishRevision: "b".repeat(64), fishRecords: [fish, { ...fish, id: "remote", images: [{ id: "remote-photo" }] }] };
+  const scalarOnly = h.tripDraft.tripUpdateFromDraft({ ...original, anglerCount: "2" }, latest).fields;
+  assert.deepEqual(Object.keys(scalarOnly), ["anglerCount"]);
+  const formerlyEmpty = h.tripDraft.initialDraft({ ...base, outcome: "zero", fishRecords: [] });
+  const remoteOutcome = h.tripDraft.tripUpdateFromDraft({ ...formerlyEmpty, notes: "local note" }, latest).fields;
+  assert.deepEqual(Object.keys(remoteOutcome), ["notes"], "A remotely changed outcome is not an explicit local outcome override");
+  for (const records of [[{ ...fish, count: 2 }], [], [...base.fishRecords, { ...fish, id: "new" }]]) {
+    const draft = { ...original, fishRecords: records, outcome: records.length ? "recorded" : "zero" };
+    const input = h.tripDraft.tripUpdateFromDraft(JSON.parse(JSON.stringify(draft)), latest).fields;
+    assert.equal(input.expectedFishRevision, base.fishRevision, "Full saves must not borrow a newer DTO revision");
+    assert.equal(input.fishRecords.length, records.length);
+  }
+  const catchOnly = h.tripDraft.fishOnlyUpdate(latest, { ...fish, id: "new" }, null);
+  assert.equal(catchOnly.expectedFishRevision, latest.fishRevision);
+  assert.equal(catchOnly.fishRecords.length, 3);
+  const mediaOnly = { ...base, fishRecords: [{ ...fish, images: [{ id: "new-photo" }] }] };
+  assert.equal(Object.hasOwn(h.tripDraft.tripUpdateFromDraft(original, mediaOnly).fields, "fishRecords"), false);
+  const edited = h.tripDraft.draftAfterFishSave(original, base, { ...base, fishRecords: [{ ...fish, count: 2 }] }, fish.id);
+  assert.equal(Object.hasOwn(h.tripDraft.tripUpdateFromDraft(edited, { ...base, fishRecords: edited.fishRecords }).fields, "fishRecords"), false, "A successful catch correction does not create a reorder-only PATCH");
+  const noRevision = { ...base }; delete noRevision.fishRevision;
+  const legacy = { ...h.tripDraft.initialDraft(noRevision), fishRecords: [{ ...fish, count: 2 }] };
+  assert.equal(legacy.fishRevisionBase, null);
+  assert.equal(Object.hasOwn(h.tripDraft.tripUpdateFromDraft(legacy, latest).fields, "expectedFishRevision"), false);
+  assert.equal(Object.hasOwn(h.tripDraft.fishOnlyUpdate(noRevision, { ...fish, id: "new" }, null), "expectedFishRevision"), false);
+  const pendingRemoval = { ...original, fishRecords: [] };
+  const concurrent = { ...latest, fishRecords: [{ ...fish, count: 5 }, { ...fish, id: "new" }] };
+  const afterSeparateCatch = h.tripDraft.draftAfterFishSave(pendingRemoval, base, concurrent, "new");
+  const conflictedRemoval = h.tripDraft.tripUpdateFromDraft(afterSeparateCatch, concurrent).fields;
+  assert.equal(conflictedRemoval.expectedFishRevision, base.fishRevision, "Saving a separate catch cannot authorize deletion of an externally edited fish");
+  assert.equal(afterSeparateCatch.fishRecordsBase[0].count, 1);
+  assert.equal(afterSeparateCatch.fishRecords.some((fish) => fish.id === "one"), false, "The unresolved local deletion stays pending");
+});
+
+test("active ordinary saves validate and retain supplied ends without completing", () => {
+  const h = harness();
+  const active = { ...legacyTrip, status: "active", recordingMode: "live", outcome: "zero" };
+  const value = { ...h.tripDraft.initialDraft(active), endedAt: h.drafts.localDateTime("2025-06-01T12:00:00Z", true), fishingMinutes: "90" };
+  const result = h.tripDraft.tripUpdateFromDraft(value, active);
+  assert.equal(result.fields.endedAt, "2025-06-01T12:00:00.000Z");
+  assert.equal(result.fields.fishingMinutes, 90);
+  assert.equal(result.fields.status, undefined);
+  assert.equal(result.deferredEffort, false);
+  const saved = { ...active, ...result.fields };
+  assert.equal(h.tripDraft.draftAfterSave(saved, value, false).endedAt, value.endedAt);
+  for (const endedAt of ["not a date", "2099-01-01T12:00:00", "2025-05-31T12:00:00"]) assert.throws(() => h.tripDraft.tripUpdateFromDraft({ ...value, endedAt }, active));
+  assert.throws(() => h.tripDraft.tripUpdateFromDraft({ ...value, fishingMinutes: "122" }, active));
+});
+
+test("unknown end permits saved or newly supplied anglers; only minutes need an end", () => {
+  const h = harness();
+  for (const status of ["active", "completed"]) {
+    const trip = { ...legacyTrip, status, anglerCount: 3, endedAt: null };
+    const value = { ...h.tripDraft.initialDraft(trip), notes: "notes only" };
+    const result = h.tripDraft.tripUpdateFromDraft(value, trip);
+    assert.equal(result.deferredEffort, false);
+    assert.equal(result.fields.notes, "notes only");
+    assert.equal(Object.hasOwn(result.fields, "anglerCount"), false);
+    const change = h.tripDraft.tripUpdateFromDraft({ ...value, anglerCount: "4" }, trip);
+    assert.equal(change.fields.anglerCount, 4);
+    assert.equal(change.deferredEffort, false);
+    const clearing = { ...trip, endedAt: "2025-06-01T12:00:00Z", fishingMinutes: 90 };
+    const fields = h.tripDraft.tripUpdateFromDraft({ ...h.tripDraft.initialDraft(clearing), endedAt: "", fishingMinutes: "" }, clearing).fields;
+    assert.equal(fields.endedAt, null);
+    assert.equal(fields.fishingMinutes, null);
+    assert.equal(Object.hasOwn(fields, "anglerCount"), false);
+  }
+  const created = h.tripDraft.tripUpdateFromDraft({ ...h.tripDraft.initialDraft(), anglerCount: "2" });
+  assert.equal(created.fields.anglerCount, 2);
+  assert.equal(created.deferredEffort, false);
+});
+
+test("catch PATCH 409s are translated without changing the draft or unrelated API errors", async () => {
+  const h = harness(); await h.login();
+  const draft = { ...h.tripDraft.initialDraft(legacyTrip), notes: "Keep me", fishRecords: [] };
+  h.drafts.writeDraft(user.id, legacyTrip.id, draft);
+  h.reply({ error: "Catch records have changed. Reload the trip before saving catches." }, 409);
+  await assert.rejects(h.api.updateTrip(legacyTrip.id, { fishRecords: [], expectedFishRevision: "a".repeat(64) }), error => error.status === 409 && error.message.includes("Οι αλλαγές σου διατηρήθηκαν") && !error.message.includes("Catch records"));
+  assert.equal(JSON.stringify(h.drafts.readDraft(user.id, legacyTrip.id)), JSON.stringify(draft));
+  h.reply({ error: "Unrelated conflict" }, 409);
+  await assert.rejects(h.api.updateTrip(legacyTrip.id, { notes: "edit" }), /Unrelated conflict/);
+});
+
+test("technique preference is validated and changing it never relabels a scored snapshot", () => {
+  const h = harness();
+  const point = { name: "Cove", lat: 36, lon: 22, technique: "spinning", spot: { score: 75 }, conditionsAt: "2026-09-08T10:00:00Z" };
+  h.tripDraft.rememberTechnique("eging");
+  const draft = h.tripDraft.initialDraft(undefined, point);
+  assert.equal(draft.destination.technique, "eging");
+  assert.equal(draft.destination.spot, undefined);
+  assert.equal(point.spot.score, 75);
+  h.localStorage.setItem("fishing-last-technique", "unsupported");
+  assert.equal(h.tripDraft.preferredTechnique("spinning"), "spinning");
 });
 
 test("trip layers are unclustered and all nearby photo fans render without zoom or source-feature gating", () => {
@@ -712,13 +911,33 @@ const legacyTrip = {
   notes: "old notes", fishRecords: [], images: [], fishingMinutes: null, anglerCount: null, conditionsRecordedAt: null,
 };
 
+test("trip API preserves omitted versus null ends and does not send completion action timestamps", async () => {
+  const h = harness();
+  await h.login();
+  for (const recordingMode of ["live", "historical"]) {
+    for (const end of [{}, { endedAt: null }]) {
+      h.reply({ trip: legacyTrip });
+      await h.api.createTrip({ recordingMode, outcome: "zero", ...end });
+      const created = JSON.parse(h.requests.at(-1).body);
+      assert.equal(Object.hasOwn(created, "endedAt"), Object.hasOwn(end, "endedAt"));
+      assert.equal(created.endedAt, end.endedAt);
+      h.reply({ trip: legacyTrip });
+      await h.api.updateTrip(legacyTrip.id, { status: "completed", outcome: "zero", ...end });
+      const updated = JSON.parse(h.requests.at(-1).body);
+      assert.equal(Object.hasOwn(updated, "endedAt"), Object.hasOwn(end, "endedAt"));
+      assert.equal(updated.endedAt, end.endedAt);
+      assert.equal(Object.hasOwn(updated, "completedAt"), false);
+    }
+  }
+});
+
 test("legacy completed trips allow note and fish corrections without inventing actual end", () => {
   const h = harness();
   const draft = h.tripDraft.initialDraft(legacyTrip);
   draft.notes = "corrected notes";
   let result = h.tripDraft.tripUpdateFromDraft(draft, legacyTrip);
-  assert.equal(result.fields.endedAt, null);
-  assert.equal(result.fields.tripDate, legacyTrip.tripDate);
+  assert.equal(Object.hasOwn(result.fields, "endedAt"), false);
+  assert.equal(Object.hasOwn(result.fields, "tripDate"), false);
   assert.equal(result.fields.notes, "corrected notes");
   assert.equal(result.fields.status, undefined);
   assert.equal(result.fields.completedAt, undefined);
@@ -727,17 +946,22 @@ test("legacy completed trips allow note and fish corrections without inventing a
   draft.outcome = "recorded";
   draft.fishRecords = [fish];
   result = h.tripDraft.tripUpdateFromDraft(draft, { ...legacyTrip, fishRecords: [{ ...fish, images: [photo] }] });
-  assert.equal(result.fields.endedAt, null);
+  assert.equal(Object.hasOwn(result.fields, "endedAt"), false);
   assert.equal(result.fields.fishRecords[0].id, "keep-fish");
   assert.equal(result.fields.fishRecords[0].images[0].id, "keep-photo");
 });
 
-test("only new historical/completion requires an actual end, and legacy public active completion is private", () => {
+test("historical saves and live completion allow unknown ends, while supplied ends remain validated", () => {
   const h = harness();
   const active = { ...legacyTrip, status: "active", visibility: "public", recordingMode: "live" };
   const draft = h.tripDraft.initialDraft(active);
   draft.completing = true; draft.outcome = "zero";
-  assert.throws(() => h.tripDraft.tripUpdateFromDraft(draft, active));
+  const unknown = h.tripDraft.tripUpdateFromDraft(draft, active).fields;
+  assert.equal(Object.hasOwn(unknown, "endedAt"), false);
+  assert.equal(unknown.status, "completed");
+  assert.equal(unknown.visibility, "private");
+  assert.equal(unknown.completedAt, undefined);
+  assert.throws(() => h.tripDraft.tripUpdateFromDraft({ ...draft, outcome: "" }, active));
   draft.endedAt = h.drafts.localDateTime("2025-06-01T12:00:00Z", true);
   const { fields } = h.tripDraft.tripUpdateFromDraft(draft, active);
   assert.equal(fields.visibility, "private");
@@ -745,7 +969,8 @@ test("only new historical/completion requires an actual end, and legacy public a
   assert.equal(fields.endedAt, "2025-06-01T12:00:00.000Z");
   assert.equal(fields.completedAt, undefined);
   const historical = { ...draft, recordingMode: "historical", completing: false, endedAt: "" };
-  assert.throws(() => h.tripDraft.tripUpdateFromDraft(historical));
+  assert.equal(h.tripDraft.tripUpdateFromDraft(historical).fields.endedAt, null);
+  assert.throws(() => h.tripDraft.tripUpdateFromDraft({ ...historical, outcome: "" }));
   historical.endedAt = draft.endedAt;
   assert.equal(h.tripDraft.tripUpdateFromDraft(historical).fields.outcome, "zero");
   historical.endedAt = h.drafts.localDateTime("2025-05-31T10:00:00Z", true);
@@ -754,7 +979,30 @@ test("only new historical/completion requires an actual end, and legacy public a
   assert.throws(() => h.tripDraft.tripUpdateFromDraft(historical));
 });
 
-test("effort is positive, deferred during active saves, retained in drafts and submitted at actual completion", async () => {
+test("clearing an end never silently clears persisted effort in either recording mode", () => {
+  const h = harness();
+  for (const recordingMode of ["historical", "live"]) {
+    const trip = { ...legacyTrip, recordingMode, endedAt: "2025-06-01T12:00:00Z" };
+    const draft = { ...h.tripDraft.initialDraft(trip), endedAt: "" };
+    assert.equal(h.tripDraft.tripUpdateFromDraft(draft, trip).fields.endedAt, null);
+    const withEffort = { ...trip, fishingMinutes: 90, anglerCount: 2 };
+    const clearing = { ...h.tripDraft.initialDraft(withEffort), endedAt: "" };
+    assert.throws(() => h.tripDraft.tripUpdateFromDraft(clearing, withEffort), /Δεν διαγράφηκαν στοιχεία/);
+    assert.equal(clearing.fishingMinutes, "90");
+    assert.equal(clearing.anglerCount, "2");
+    const fields = h.tripDraft.tripUpdateFromDraft({ ...clearing, fishingMinutes: "", anglerCount: "" }, withEffort).fields;
+    assert.equal(fields.endedAt, null);
+    assert.equal(fields.fishingMinutes, null);
+    assert.equal(fields.anglerCount, null);
+    const deferred = h.tripDraft.tripUpdateFromDraft({ ...draft, fishingMinutes: "30", anglerCount: "2" }, trip);
+    assert.equal(deferred.deferredEffort, true);
+    assert.equal(Object.hasOwn(deferred.fields, "fishingMinutes"), false);
+    assert.equal(deferred.fields.anglerCount, 2);
+    assert.equal(h.tripDraft.draftAfterSave({ ...trip, ...deferred.fields }, { ...draft, fishingMinutes: "30" }, true).fishingMinutes, "30");
+  }
+});
+
+test("only fishing minutes defer without an end; anglers save immediately and completion submits retained minutes", async () => {
   const h = harness();
   await h.login();
   const active = { ...legacyTrip, recordingMode: "live", status: "active" };
@@ -764,23 +1012,24 @@ test("effort is positive, deferred during active saves, retained in drafts and s
   draft.fishingMinutes = "90"; draft.anglerCount = "2";
   const pending = h.tripDraft.tripUpdateFromDraft(draft, active);
   assert.equal(pending.deferredEffort, true);
-  assert.equal(pending.fields.endedAt, null);
-  assert.equal(pending.fields.fishingMinutes, null);
-  assert.equal(pending.fields.anglerCount, null);
-  const retained = h.tripDraft.draftAfterSave({ ...active, ...pending.fields }, draft, pending.deferredEffort);
+  assert.equal(Object.hasOwn(pending.fields, "endedAt"), false);
+  assert.equal(Object.hasOwn(pending.fields, "fishingMinutes"), false);
+  assert.equal(pending.fields.anglerCount, 2);
+  const savedActive = { ...active, ...pending.fields };
+  const retained = h.tripDraft.draftAfterSave(savedActive, draft, pending.deferredEffort);
   h.drafts.writeDraft("owner", active.id, retained);
   const resumed = h.drafts.readDraft("owner", active.id);
   assert.equal(resumed.fishingMinutes, "90");
   assert.equal(resumed.anglerCount, "2");
   resumed.completing = true; resumed.outcome = "zero"; resumed.endedAt = h.drafts.localDateTime("2025-06-01T12:00:00Z", true);
-  const completed = h.tripDraft.tripUpdateFromDraft(resumed, active);
+  const completed = h.tripDraft.tripUpdateFromDraft(resumed, savedActive);
   assert.equal(completed.deferredEffort, false);
   assert.equal(completed.fields.fishingMinutes, 90);
-  assert.equal(completed.fields.anglerCount, 2);
+  assert.equal(Object.hasOwn(completed.fields, "anglerCount"), false);
   resumed.fishingMinutes = "122";
   assert.throws(() => h.tripDraft.tripUpdateFromDraft(resumed, active));
   resumed.fishingMinutes = ""; resumed.anglerCount = "";
-  assert.equal(h.tripDraft.tripUpdateFromDraft(resumed, active).fields.fishingMinutes, null);
+  assert.equal(Object.hasOwn(h.tripDraft.tripUpdateFromDraft(resumed, savedActive).fields, "fishingMinutes"), false);
 });
 
 test("new live saves transfer deferred effort to the persisted trip draft; legacy missing-end effort also waits", () => {
@@ -862,7 +1111,7 @@ test("analysis removes model zones and policy walls but retains conditions, prov
     response.mode = mode;
     if (mode === "point") response.pointAnalysis = { requestedPoint: { lat: 36, lon: 22 }, analyzedPoint: { lat: 36.001, lon: 22.001 }, adjustedToWater: true, waterDistanceM: 120, gpsAccuracyM: 8, approximateZone: { label: "Removed model zone", distanceRangeM: [60, 150], depthRangeM: [4, 12] } };
     const html = render();
-    for (const text of ["Unique technique depth range", "23.4°C", "17.8km/h", "1.2μ", "Profile bait", "Profile rig", "Profile time", "Profile casting guidance", "Backend species", "Ιστορικό στιγμιότυπο,", "Depth provider", "Πηγές δεδομένων", "Δυσμενείς καιρικές ή θαλάσσιες συνθήκες", "Καιρός", "Θάλασσα"]) assert.equal(html.split(text).length - 1, 1, text);
+    for (const text of ["Unique technique depth range", "23,4", "17,8", "1,2", "Profile bait", "Profile rig", "Profile time", "Profile casting guidance", "Backend species", "Ιστορικό στιγμιότυπο,", "Depth provider", "Πηγές δεδομένων", "Δυσμενείς καιρικές ή θαλάσσιες συνθήκες"]) assert.equal(html.split(text).length - 1, 1, text);
     for (const text of ["Removed model zone", "Ζώνη μοντέλου", "χονδρική ζώνη", "Προειδοποιήσεις", "Μη επαληθευμένο", "Check locally", "Unique safety warning", "Access warning", "Response-only warning", "Unique scoring rationale"]) assert.ok(!html.includes(text), text);
     assert.ok(html.includes("Μη διαθέσιμο"));
     assert.ok(!html.includes(spot.conditionsLabel));

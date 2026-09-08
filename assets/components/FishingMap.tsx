@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import maplibregl, { Map as MapLibreMap } from "maplibre-gl";
 import type { FeatureCollection, LineString, Point, Polygon } from "geojson";
 import type { Coordinates, GeocodedLocation, PointAnalysis, RankedSpot, SpotSearchMode } from "@/lib/types";
@@ -24,6 +24,10 @@ interface FishingMapProps {
   depthVisible: boolean;
   recenterKey?: number;
   onMeasureStart?: () => void;
+  tools?: ReactNode;
+  toolsOpen?: boolean;
+  toolsVisible?: boolean;
+  onToolsToggle?: () => void;
   pickedPoint?: Coordinates;
   mode?: SpotSearchMode;
   pointAnalysis?: PointAnalysis;
@@ -51,7 +55,7 @@ const EMPTY_COLLECTION: MapFeatureCollection = {
   features: [],
 };
 
-export function FishingMap({ location, radiusKm, spots, trips = [], userId, selectedTripId, tripFocus, selectedSpotId, loading, baseLayer, depthVisible, recenterKey = 0, onMeasureStart, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
+export function FishingMap({ location, radiusKm, spots, trips = [], userId, selectedTripId, tripFocus, selectedSpotId, loading, baseLayer, depthVisible, recenterKey = 0, onMeasureStart, tools, toolsOpen, toolsVisible = true, onToolsToggle, pickedPoint, mode, pointAnalysis, onSelectSpot, onSelectTrip, onPickPoint }: FishingMapProps) {
   const [readyMap, setReadyMap] = useState<MapLibreMap>();
   const [measuring, setMeasuring] = useState(false);
   const [measurePoints, setMeasurePoints] = useState<Coordinates[]>([]);
@@ -784,10 +788,15 @@ export function FishingMap({ location, radiusKm, spots, trips = [], userId, sele
     <div className="relative h-full min-h-[100svh] w-full">
       <div ref={containerRef} className="h-full w-full" aria-label="Χάρτης ψαρότοπων" />
       {readyMap && trips.filter((trip) => isValidTripMarker(trip) && tripMapPhotos(trip, userId).length > 0).map((trip) => <TripPhotoMarker key={trip.id} map={readyMap} trip={trip} userId={userId} selected={trip.id === selectedTripId} onSelect={() => { if (!measuringRef.current) onSelectTripRef.current?.(trip.id); }} />)}
-      <div className="measure-tools" data-active={measuring} aria-label="Μέτρηση απόστασης">
-        <button className={measuring ? "ui-primary" : "ui-secondary"} aria-pressed={measuring} onClick={() => toggleMeasurement(!measuring)}>{measuring ? "Έξοδος μέτρησης" : "Μέτρηση"}</button>
-        {measuring && <div className="measure-status"><p role="status" aria-live="polite">{measurementLabel ? `Απόσταση: ${measurementLabel}` : measurePoints.length ? "Πάτησε το δεύτερο σημείο" : "Πάτησε το πρώτο σημείο"}</p><p className="ui-help">Ευθεία απόσταση, όχι διαδρομή ή οδηγία πλοήγησης.</p><button className="ui-secondary" disabled={!measurePoints.length} onClick={() => setMeasurePoints([])}>Καθαρισμός</button></div>}
-      </div>
+      {toolsVisible && <div className="map-tools">
+        <button className="ui-secondary shadow-glow flex items-center gap-2" aria-expanded={Boolean(toolsOpen)} aria-controls="map-tools-popover" onClick={onToolsToggle}><svg aria-hidden="true" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="m3 7 9-4 9 4-9 4-9-4Zm0 5 9 4 9-4M3 17l9 4 9-4" /></svg>Εργαλεία</button>
+        {toolsOpen && <section id="map-tools-popover" className="map-layers" aria-label="Εργαλεία χάρτη" onKeyDown={(event) => { if (event.key === "Escape") onToolsToggle?.(); }}>
+          <div className="flex items-center justify-between gap-2"><h2 className="text-sm font-bold">Εργαλεία χάρτη</h2><button className="ui-close" aria-label="Κλείσιμο εργαλείων" onClick={onToolsToggle}>x</button></div>
+          {tools}
+          <button className={measuring ? "ui-primary" : "ui-secondary"} aria-pressed={measuring} onClick={() => toggleMeasurement(!measuring)}>{measuring ? "Έξοδος μέτρησης" : "Μέτρηση απόστασης"}</button>
+        </section>}
+      </div>}
+      {measuring && <div className="measure-tools" data-active="true" aria-label="Μέτρηση απόστασης"><div className="measure-status"><p role="status" aria-live="polite">{measurementLabel ? `Απόσταση: ${measurementLabel}` : measurePoints.length ? "Πάτησε το δεύτερο σημείο" : "Πάτησε το πρώτο σημείο"}</p><p className="ui-help">Ευθεία απόσταση, όχι διαδρομή ή οδηγία πλοήγησης.</p><div className="flex gap-2"><button className="ui-secondary" disabled={!measurePoints.length} onClick={() => setMeasurePoints([])}>Καθαρισμός</button><button className="ui-secondary" onClick={() => toggleMeasurement(false)}>Έξοδος μέτρησης</button></div></div></div>}
       {loading && (
         <div className="absolute inset-0 grid place-items-center bg-ink/20 backdrop-blur-[2px]">
           <div className="rounded-3xl bg-white px-6 py-4 text-center shadow-glow">

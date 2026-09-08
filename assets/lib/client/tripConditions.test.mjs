@@ -44,3 +44,12 @@ test('optional pressure trend is shown only when meaningful and aligned', () => 
   assert.doesNotMatch(render({ weather: { pressureTrend: 'rising', sourceSnapshot: {} } }), /Τάση:/);
   assert.match(render({}), /MSL: μέση στάθμη θάλασσας/);
 });
+
+test('six fishing highlights precede the collapsed complete conditions and sources', () => {
+  const html = render({ weather: { windDirectionDeg: 315, gustKmh: 20 }, marine: { wavePeriodS: 5, seaSurfaceTemperatureC: 23 } });
+  const aboveFold = html.split('<details')[0];
+  assert.equal((aboveFold.match(/<dt[ >]/g) ?? []).length, 6);
+  for (const title of ['Άνεμος', 'Ριπές', 'Ύψος κύματος', 'Κύμα · περίοδος', 'Θερμ. νερού', 'ΒΔ']) assert.ok(aboveFold.includes(title));
+  assert.ok(!aboveFold.includes('Υγρασία') && !aboveFold.includes('Στάθμη'));
+  assert.ok(html.includes('Όλες οι συνθήκες') && html.includes('Πηγές δεδομένων'));
+});

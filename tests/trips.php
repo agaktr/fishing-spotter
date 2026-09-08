@@ -104,7 +104,10 @@ try {
     $expect(fn () => $rules->update(['status' => 'active']));
     $expect(fn () => $rules->update([]));
     $expect(fn () => $rules->create([...$base, 'visibility' => 'public']));
-    $expect(fn () => $rules->create([...$historical, 'endedAt' => null]));
+    $check($rules->create([...$historical, 'endedAt' => null])['endedAt'] === null, 'Historical end can explicitly be unknown.');
+    $withoutEnd = $historical;
+    unset($withoutEnd['endedAt']);
+    $check($rules->create($withoutEnd)['endedAt'] === null, 'Historical end can be omitted.');
     $withoutOutcome = $historical;
     unset($withoutOutcome['outcome']);
     $expect(fn () => $rules->create($withoutOutcome));
@@ -143,6 +146,8 @@ try {
     $expect(fn () => $rules->create([...$historical, 'sharedMediaIds' => [$mediaId]]));
 
     $live = $repository->createTrip($owner, $rules->create($base));
+    $check($live['fishRevision'] === hash('sha256', '[]'), 'Creation returns the persisted empty catch revision.');
+    $check($repository->getActiveTrip($owner)['fishRevision'] === $live['fishRevision'], 'Active owner DTO includes the same revision.');
     $check($live['status'] === 'active' && $live['completedAt'] === null && $live['endedAt'] === null, 'Live creation never completes or invents an end.');
     $expect(fn () => $repository->createTrip($owner, $base), 409);
     $expect(fn () => $repository->createTrip($users['disabled'], $base), 401);
@@ -160,6 +165,7 @@ try {
     $check($repository->getActiveTrip($owner)['id'] === $live['id'], 'Historical insertion does not disturb active trip.');
     $check((int) $db->fetchOne('SELECT COUNT(*) FROM places') === 0, 'Public personal trip never upserts a catalog place.');
     $public = $repository->getTrip($historicalTrip['id'], null);
+    $check(!array_key_exists('fishRevision', $public), 'Public DTO never exposes the private catch revision.');
     $check($public['lat'] === 37.99 && $public['lon'] === 23.77 && $public['locationName'] !== $base['locationName'], 'Public coordinates approximate and personal name hidden.');
     $check($public['spotId'] !== $base['spotId'] && $public['userId'] === '' && $public['username'] === '' && $public['displayName'] === '', 'Public source and personal identity hidden.');
     $check($public['notes'] === '' && !isset($public['fishRecords'][0]['notes']), 'Trip and fish coordinate notes are not shared by default.');
@@ -169,6 +175,10 @@ try {
     $check($repository->getTrip($historicalTrip['id'], $owner)['lat'] === $base['lat'], 'Owner always sees original precision.');
     $check(count($repository->listTrips($owner, 'mine')) === 2 && count($repository->listTrips($other, 'visible')) === 1, 'Trip list visibility is owner scoped.');
     $check($repository->listTrips(null, 'public')[0] === $public, 'List and detail use identical public transformations.');
+    foreach (['mine', 'visible', 'public'] as $scope) {
+        $trips = array_column($repository->listTrips($owner, $scope), null, 'id');
+        $check($trips[$historicalTrip['id']]['fishRevision'] === $historicalTrip['fishRevision'], 'Every owner list scope includes the revision.');
+    }
 
     // Files are generated only in this test's unique temporary directory, never application media storage.
     if (!is_dir($testRoot)) {
@@ -179,6 +189,54 @@ try {
     imagepng($image, $mediaDir.'/upload.png');
     imagedestroy($image);
     $upload = static fn (): UploadedFile => new UploadedFile($mediaDir.'/upload.png', '37.9876543-23.7654321.png', 'image/png', null, true);
+
+    // Two editors start with the same catch array; one immediately saves another catch and photo.
+    $first = $repository->updateTrip($live['id'], $owner, ['fishRecords' => [$fish], 'expectedFishRevision' => $live['fishRevision']]);
+    $secondFish = [...$fish, 'id' => 'immediate-catch'];
+    $latest = $repository->updateTrip($live['id'], $owner, ['fishRecords' => [$fish, $secondFish], 'expectedFishRevision' => $first['fishRevision']]);
+    $check($latest['fishRevision'] !== $first['fishRevision'] && $first['fishRevision'] !== $live['fishRevision'], 'Immediate catch saves advance the content revision.');
+    $withMedia = $repository->addTripMedia($live['id'], $owner, $secondFish['id'], $upload());
+    $check($withMedia['fishRevision'] === $latest['fishRevision'], 'Attaching catch media does not change persisted catch revision.');
+    $immediatePhoto = $withMedia['fishRecords'][1]['images'][0];
+    $files = [];
+    foreach ([false, true] as $thumbnail) {
+        $path = $repository->getTripMediaFile($immediatePhoto['id'], $owner, $thumbnail)['path'];
+        $files[$path] = hash_file('sha256', $path);
+    }
+    $rowBefore = $db->fetchAssociative('SELECT * FROM trips WHERE id = ?', [$live['id']]);
+    $mediaBefore = $db->fetchAllAssociative('SELECT * FROM trip_media WHERE trip_id = ?', [$live['id']]);
+    foreach ([[$fish], [], null] as $staleFish) {
+        $expect(fn () => $repository->updateTrip($live['id'], $owner, ['fishRecords' => $staleFish, 'expectedFishRevision' => $first['fishRevision'], 'notes' => 'Stale overwrite', 'status' => 'completed', 'visibility' => 'public']), 409);
+    }
+    $expect(fn () => $repository->updateTrip($live['id'], $owner, ['fishRecords' => [], 'expectedFishRevision' => $first['fishRevision'], 'recordingMode' => 'historical']), 409);
+    foreach ([$first['fishRevision'], null] as $precondition) {
+        $expect(fn () => $repository->updateTrip($live['id'], $other, ['fishRecords' => [], 'expectedFishRevision' => $precondition]), 404);
+        $expect(fn () => $repository->updateTrip($uuid(), $owner, ['fishRecords' => [], 'expectedFishRevision' => $precondition]), 404);
+    }
+    foreach ([null, false, 123, [], (object) [], '', str_repeat('a', 63), str_repeat('a', 65), str_repeat('g', 64), strtoupper($first['fishRevision']), $first['fishRevision']."\n"] as $invalid) {
+        foreach ([['fishRecords' => []], ['notes' => 'Invalid precondition']] as $patch) {
+            $expect(fn () => $repository->updateTrip($live['id'], $owner, [...$patch, 'expectedFishRevision' => $invalid]));
+        }
+    }
+    $expect(fn () => $repository->updateTrip($live['id'], $owner, ['expectedFishRevision' => $latest['fishRevision']]));
+    $check($db->fetchAssociative('SELECT * FROM trips WHERE id = ?', [$live['id']]) === $rowBefore, 'Rejected preconditions leave all trip columns unchanged, before rules and writes.');
+    $check($db->fetchAllAssociative('SELECT * FROM trip_media WHERE trip_id = ?', [$live['id']]) === $mediaBefore, 'Stale catch replacement cannot delete media rows.');
+    foreach ($files as $path => $hash) {
+        $check(is_file($path) && hash_file('sha256', $path) === $hash, 'Rejected preconditions preserve original and thumbnail bytes.');
+    }
+    $check($repository->getTrip($live['id'], $owner) === $withMedia, 'Stale replacement cannot overwrite the latest catch array or DTO.');
+    $unrelated = $repository->updateTrip($live['id'], $owner, ['notes' => 'Unrelated correction', 'expectedFishRevision' => $first['fishRevision'], 'fishRevision' => 'forged', 'userId' => $other['id'], 'lat' => 0]);
+    $check($unrelated['fishRevision'] === $latest['fishRevision'] && $unrelated['userId'] === $owner['id'] && $unrelated['lat'] === $base['lat'], 'Non-catch patches ignore valid stale markers and preserve existing input whitelists.');
+    $corrected = $repository->updateTrip($live['id'], $owner, ['fishRecords' => [$fish, [...$secondFish, 'notes' => 'Corrected catch']], 'expectedFishRevision' => $latest['fishRevision']]);
+    $check($corrected['fishRevision'] !== $latest['fishRevision'] && $corrected['fishRecords'][1]['images'][0]['id'] === $immediatePhoto['id'], 'Current revision permits content-only edits and preserves media.');
+    $legacySave = $repository->updateTrip($live['id'], $owner, ['fishRecords' => [$fish, $secondFish]]);
+    $check($legacySave['fishRevision'] === $latest['fishRevision'], 'Shipped clients can still replace catches without a precondition; revisions are content hashes, not counters.');
+    $cleared = $repository->updateTrip($live['id'], $owner, ['fishRecords' => [], 'expectedFishRevision' => $legacySave['fishRevision']]);
+    $check($cleared['fishRevision'] === $live['fishRevision'] && $cleared['fishRecords'] === [], 'Current revision permits intentional catch removal.');
+    foreach ($files as $path => $hash) {
+        $check(!is_file($path), 'Accepted catch removal still deletes its media files.');
+    }
+
     $expect(fn () => $repository->addTripMedia($historicalTrip['id'], $other, null, $upload()), 404);
     $expect(fn () => $repository->addTripMedia($historicalTrip['id'], $owner, 'missing-fish', $upload()), 404);
     $withPhoto = $repository->addTripMedia(strtoupper($historicalTrip['id']), $owner, null, $upload());
@@ -238,10 +296,19 @@ try {
     $check($suppliedEnd['endedAt'] === '2025-06-01T10:00:00.000Z' && $suppliedEnd['fishingMinutes'] === 1, 'Client-supplied end is honored in UTC, including the one-minute rounding boundary.');
     $expect(fn () => $repository->updateTrip($suppliedEnd['id'], $owner, ['fishingMinutes' => 2]));
     $legacy = $repository->createTrip($owner, $historical);
-    $db->update('trips', ['ended_at' => null, 'outcome' => 'not-recorded', 'fish_records_json' => $json([$legacyFish])], ['id' => $legacy['id']]);
+    $legacyJson = json_encode([$legacyFish], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT);
+    $db->update('trips', ['ended_at' => null, 'outcome' => 'not-recorded', 'fish_records_json' => $legacyJson], ['id' => $legacy['id']]);
     $readLegacy = $repository->getTrip($legacy['id'], $owner);
+    $check($readLegacy['fishRevision'] === hash('sha256', $db->fetchOne('SELECT fish_records_json FROM trips WHERE id = ?', [$legacy['id']])), 'Legacy revision hashes raw stored JSON, not DTO defaults or attached images.');
+    $check($readLegacy['fishRevision'] !== hash('sha256', $json([$legacyFish])), 'Revision does not decode and re-encode persisted JSON formatting.');
+    $check($readLegacy['fishRevision'] !== hash('sha256', $json($readLegacy['fishRecords'])), 'DTO normalization must not be used to reconstruct the opaque revision.');
     $check($readLegacy['outcome'] === 'recorded' && $readLegacy['fishRecords'][0]['weightBasis'] === 'unknown' && $readLegacy['endedAt'] === null, 'Persisted legacy fish get sensible read mapping without invented end or measurement basis.');
-    $legacy = $repository->updateTrip($legacy['id'], $owner, ['fishRecords' => [$legacyFish]]);
+    $db->update('trips', ['fish_records_json' => json_encode([[...$legacyFish, 'images' => [['id' => 'legacy-embedded-image']]]], JSON_THROW_ON_ERROR | JSON_PRETTY_PRINT)], ['id' => $legacy['id']]);
+    $embeddedMedia = $repository->getTrip($legacy['id'], $owner);
+    $check($embeddedMedia['fishRevision'] !== $readLegacy['fishRevision'] && $embeddedMedia['fishRecords'] == $readLegacy['fishRecords'], 'Media actually embedded in raw catch JSON affects revision even when the DTO hides it.');
+    $expect(fn () => $repository->updateTrip($legacy['id'], $owner, ['fishRecords' => [$legacyFish], 'expectedFishRevision' => $readLegacy['fishRevision']]), 409);
+    $check($repository->updateTrip($legacy['id'], $owner, ['notes' => 'Legacy note correction'])['fishRevision'] === $embeddedMedia['fishRevision'], 'Unrelated edits preserve raw legacy catch JSON and its revision.');
+    $legacy = $repository->updateTrip($legacy['id'], $owner, ['fishRecords' => [$legacyFish], 'expectedFishRevision' => $embeddedMedia['fishRevision']]);
     $check($legacy['fishRecords'][0]['weightBasis'] === 'unknown', 'Unchanged legacy measured groups remain editable.');
     $expect(fn () => $repository->updateTrip($legacy['id'], $owner, ['fishRecords' => [[...$legacyFish, 'weightKg' => 2]]]));
     $legacy = $repository->updateTrip($legacy['id'], $owner, ['fishRecords' => [[...$legacyFish, 'weightKg' => 2, 'weightBasis' => 'total', 'lengthBasis' => 'average']]]);
@@ -249,6 +316,20 @@ try {
     $repository->updateTrip($legacy['id'], $owner, ['fishRecords' => []]);
     $check($repository->updateTrip($legacy['id'], $owner, ['notes' => 'Legacy empty correction', 'endedAt' => null])['outcome'] === 'not-recorded', 'Legacy completed unknown outcome and missing end allow unrelated corrections.');
     $expect(fn () => $repository->updateTrip($historicalTrip['id'], $owner, ['endedAt' => null]));
+    $check($repository->getTrip($historicalTrip['id'], $owner)['fishingMinutes'] === 90, 'Conflicting end clearing preserves persisted effort.');
+    foreach (['historical', 'live'] as $mode) {
+        $unknown = $repository->createTrip($owner, [...$withoutEnd, 'recordingMode' => $mode]);
+        if ($mode === 'live') {
+            $unknown = $repository->updateTrip($unknown['id'], $owner, ['status' => 'completed', 'outcome' => 'zero', 'endedAt' => null]);
+        }
+        $check($unknown['endedAt'] === null && $unknown['completedAt'] !== null && $unknown['fishingMinutes'] === null, 'Unknown end completes without fabricated effort or time.');
+        $check($repository->updateTrip($unknown['id'], $owner, ['notes' => 'No end supplied'])['endedAt'] === null, 'Omitted end preserves unknown state.');
+        $known = $repository->updateTrip($unknown['id'], $owner, ['endedAt' => $historical['endedAt'], 'fishingMinutes' => 30]);
+        $check($repository->updateTrip($known['id'], $owner, ['notes' => 'Keep end'])['endedAt'] === $known['endedAt'], 'Omitted end preserves known state.');
+        $expect(fn () => $repository->updateTrip($known['id'], $owner, ['endedAt' => null]));
+        $cleared = $repository->updateTrip($known['id'], $owner, ['endedAt' => null, 'fishingMinutes' => null]);
+        $check($cleared['endedAt'] === null && $cleared['fishingMinutes'] === null && $cleared['completedAt'] === $unknown['completedAt'], 'Explicit effort clearing permits unknown end without changing completion timestamp.');
+    }
 
     $snapshot = ['confidence' => 'medium', 'windSpeedKmh' => 12, 'pressureTrend' => 'stable', 'validAt' => '2025-06-01T10:00:00Z', 'fetchedAt' => '2025-06-01T09:59:00Z', 'sourceCoordinates' => ['lat' => 37.9876543, 'lon' => 23.7654321], 'requestedCoordinates' => ['lat' => 37.9876543, 'lon' => 23.7654321], 'source' => 'private GPS', 'extra' => ['gps' => 'private GPS']];
     $weatherTrip = $repository->createTrip($owner, [...$historical, 'visibility' => 'public', 'conditionsRecordedAt' => '2025-06-01T10:00:00Z', 'weather' => $snapshot]);

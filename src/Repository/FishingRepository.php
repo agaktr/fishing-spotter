@@ -141,6 +141,16 @@ final class FishingRepository
             if (!$row) {
                 throw new ApiException('Η εξόρμηση δεν βρέθηκε ή δεν σου ανήκει.', 404);
             }
+            if (array_key_exists('expectedFishRevision', $input)) {
+                $expected = $input['expectedFishRevision'];
+                if (!is_string($expected) || !preg_match('/\A[0-9a-f]{64}\z/', $expected)) {
+                    throw new ApiException('expectedFishRevision must be a 64-character lowercase SHA-256 string.');
+                }
+                // Compare persisted bytes under the lock, before rules or catch/media changes.
+                if (array_key_exists('fishRecords', $input) && !hash_equals(hash('sha256', $row['fish_records_json']), $expected)) {
+                    throw new ApiException('Catch records have changed. Reload the trip before saving catches.', 409);
+                }
+            }
             $id = $row['id'];
             $before = $this->mapTrip($row);
             $before['fishRecords'] = $this->decode($row['fish_records_json'], []);
@@ -566,6 +576,7 @@ final class FishingRepository
             'techniqueLabel' => $row['technique_label'], 'locationName' => $row['location_name'], 'lat' => (float) $row['latitude'],
             'lon' => (float) $row['longitude'], 'spotId' => $row['source_spot_id'] ?: $row['id'], 'score' => (int) $row['score'],
             'fishCaught' => array_map(static fn (array $record): string => $record['count'].'x '.$record['species'], $fish),
+            'fishRevision' => hash('sha256', $row['fish_records_json']),
             'fishRecords' => $fish, 'images' => [],
             'notes' => $row['notes'], 'conditionsLabel' => $row['conditions_label'],
             'depthLabel' => $row['depth_label'], 'seabedLabel' => $row['seabed_label'],

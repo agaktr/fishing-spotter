@@ -132,7 +132,12 @@ export async function fetchTrip(id: string): Promise<SavedFishingTrip> {
   return (await apiRequest<{ trip: SavedFishingTrip }>(`/api/trips/${encodeURIComponent(id)}`)).trip;
 }
 export async function updateTrip(id: string, input: UpdateTripInput): Promise<SavedFishingTrip> {
-  return (await apiRequest<{ trip: SavedFishingTrip }>(`/api/trips/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) })).trip;
+  try {
+    return (await apiRequest<{ trip: SavedFishingTrip }>(`/api/trips/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(input) })).trip;
+  } catch (error) {
+    if (input.fishRecords && error instanceof ApiError && error.status === 409) throw new ApiError("Τα ψάρια άλλαξαν σε άλλη συσκευή. Οι αλλαγές σου διατηρήθηκαν. Έλεγξε την αποθηκευμένη έκδοση πριν αποθηκεύσεις ξανά τα ψάρια.", 409);
+    throw error;
+  }
 }
 export async function uploadTripImage(id: string, image: File, fishRecordId?: string): Promise<SavedFishingTrip> {
   const body = new FormData();

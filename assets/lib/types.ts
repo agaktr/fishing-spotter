@@ -320,6 +320,7 @@ export interface SavedFishingTrip {
   score: number;
   fishCaught: string[];
   fishRecords: TripFishRecord[];
+  fishRevision?: string;
   images: TripMedia[];
   notes: string;
   conditionsLabel: string;
@@ -370,6 +371,7 @@ export interface UpdateTripInput {
   tripDate?: string;
   notes?: string;
   fishRecords?: TripFishRecord[];
+  expectedFishRevision?: string;
   status?: "completed";
 }
 

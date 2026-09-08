@@ -277,6 +277,8 @@ try {
     $http('POST', '/api/trips', 400, $owner, [...$base, 'visibility' => 'public']);
     $live = $createTrip($base, $owner, $ownerId);
     $liveId = $live['id'];
+    $check($live['fishRevision'] === hash('sha256', '[]'), 'Owner creation exposes the empty persisted catch revision.');
+    $check($http('GET', '/api/trips/active', 200, $owner)['json']['trip']['fishRevision'] === $live['fishRevision'], 'Active owner HTTP DTO exposes the revision.');
     $check($live['status'] === 'active' && $live['visibility'] === 'private' && $live['recordingMode'] === 'live', 'Live trips start active and private.');
     $check($live['endedAt'] === null && $live['completedAt'] === null && $live['fishingMinutes'] === null, 'Live creation does not invent end times or effort.');
     $http('POST', '/api/trips', 409, $owner, $base);
@@ -295,6 +297,21 @@ try {
     $check($journal['status'] === 'completed' && $journal['visibility'] === 'private' && $journal['endedAt'] === '2025-06-01T12:00:00.000Z', 'Historical insertion completes privately alongside a live trip.');
     $check($http('GET', '/api/trips/active', 200, $owner)['json']['trip']['id'] === $liveId, 'Historical insertion preserves the live trip.');
     $check(count($http('GET', '/api/trips?scope=mine', 200, $owner)['json']['trips']) === 2, 'Private trip lists contain only the owner\'s records.');
+    foreach ([[], ['endedAt' => null]] as $endInput) {
+        $unknown = $createTrip([...$base, 'recordingMode' => 'historical', 'outcome' => 'zero', ...$endInput], $owner, $ownerId);
+        $id = $unknown['id'];
+        $check($unknown['endedAt'] === null && $unknown['completedAt'] !== null && $unknown['fishingMinutes'] === null, 'Historical HTTP create accepts omitted/null end without invented duration.');
+        $check($http('PATCH', '/api/trips/'.$id, 200, $owner, ['notes' => 'Unknown duration'])['json']['trip']['endedAt'] === null, 'Omitted end remains unknown.');
+        foreach (['2025-06-01T09:00:00Z', '2099-01-01T00:00:00Z', 'not-a-date'] as $badEnd) {
+            $http('PATCH', '/api/trips/'.$id, 400, $owner, ['endedAt' => $badEnd]);
+        }
+        $http('PATCH', '/api/trips/'.$id, 200, $owner, ['endedAt' => $historical['endedAt'], 'fishingMinutes' => 30]);
+        $http('PATCH', '/api/trips/'.$id, 400, $owner, ['endedAt' => null]);
+        $check($http('GET', '/api/trips/'.$id, 200, $owner)['json']['trip']['fishingMinutes'] === 30, 'Rejected clearing does not erase effort.');
+        $cleared = $http('PATCH', '/api/trips/'.$id, 200, $owner, ['endedAt' => null, 'fishingMinutes' => null])['json']['trip'];
+        $check($cleared['endedAt'] === null && $cleared['completedAt'] === $unknown['completedAt'], 'Explicit clearing preserves completion action timestamp.');
+        $http('DELETE', '/api/trips/'.$id, 204, $owner);
+    }
     $check($http('GET', '/api/trips?scope=mine', 200, $other)['json']['trips'] === [], 'Other owners have an independent private trip list.');
 
     // Generate the upload in memory; only the application writes fixture media files.
@@ -312,6 +329,53 @@ try {
 
         return $http('POST', '/api/trips/'.$tripId.'/media', $expected, $token, $body, multipart: true)['json'];
     };
+
+    $firstCatch = $http('PATCH', '/api/trips/'.$liveId, 200, $owner, ['fishRecords' => [$fish], 'expectedFishRevision' => $live['fishRevision']])['json']['trip'];
+    $secondFish = [...$fish, 'id' => $uuid()];
+    $latestCatch = $http('PATCH', '/api/trips/'.$liveId, 200, $owner, ['fishRecords' => [$fish, $secondFish], 'expectedFishRevision' => $firstCatch['fishRevision']])['json']['trip'];
+    $check($firstCatch['fishRevision'] !== $live['fishRevision'] && $latestCatch['fishRevision'] !== $firstCatch['fishRevision'], 'Immediate saves advance the revision returned by PATCH.');
+    $catchMedia = $upload($liveId, $owner, $secondFish['id'])['trip'];
+    $immediatePhoto = $catchMedia['fishRecords'][1]['images'][0];
+    $check($catchMedia['fishRevision'] === $latestCatch['fishRevision'], 'Multipart catch upload does not change the raw catch revision.');
+    $rowBeforeConflict = $db->fetchAssociative('SELECT * FROM trips WHERE id = ?', [$liveId]);
+    $mediaBeforeConflict = $db->fetchAllAssociative('SELECT * FROM trip_media WHERE trip_id = ?', [$liveId]);
+    $filesBeforeConflict = $mediaSnapshot();
+    foreach ([[$fish], [], null] as $staleFish) {
+        $conflict = $http('PATCH', '/api/trips/'.$liveId, 409, $owner, ['fishRecords' => $staleFish, 'expectedFishRevision' => $firstCatch['fishRevision'], 'notes' => 'Stale overwrite', 'status' => 'completed', 'visibility' => 'public'])['json'];
+        $check($conflict === ['error' => 'Catch records have changed. Reload the trip before saving catches.'], 'Conflict response is generic, without latest owner data or revision.');
+    }
+    foreach ([$firstCatch['fishRevision'], null] as $precondition) {
+        $patch = ['fishRecords' => [], 'expectedFishRevision' => $precondition];
+        $http('PATCH', '/api/trips/'.$liveId, 401, body: $patch);
+        $denied = $http('PATCH', '/api/trips/'.$liveId, 404, $other, $patch)['json'];
+        $missing = $http('PATCH', '/api/trips/'.$uuid(), 404, $other, $patch)['json'];
+        $check($denied === $missing && array_keys($denied) === ['error'], 'Ownership precedes precondition checks and does not reveal a private trip.');
+        $http('PATCH', '/api/trips/'.$liveId, 404, $admin, $patch);
+    }
+    foreach ([null, false, 123, [], (object) [], '', str_repeat('a', 63), str_repeat('a', 65), str_repeat('g', 64), strtoupper($firstCatch['fishRevision']), $firstCatch['fishRevision']."\n"] as $invalid) {
+        $http('PATCH', '/api/trips/'.$liveId, 400, $owner, ['fishRecords' => [], 'expectedFishRevision' => $invalid]);
+    }
+    $http('PATCH', '/api/trips/'.$liveId, 400, $owner, ['notes' => 'Invalid marker without catches', 'expectedFishRevision' => null]);
+    $http('PATCH', '/api/trips/'.$liveId, 400, $owner, ['expectedFishRevision' => $latestCatch['fishRevision']]);
+    $http('PATCH', '/api/trips/'.$liveId, 400, $owner, ['fishRevision' => $latestCatch['fishRevision']]);
+    $http('PATCH', '/api/trips/'.$liveId, 400, $owner, ['fishRecords' => null, 'expectedFishRevision' => $latestCatch['fishRevision']]);
+    $check($db->fetchAssociative('SELECT * FROM trips WHERE id = ?', [$liveId]) === $rowBeforeConflict, 'Rejected HTTP saves leave all trip columns unchanged.');
+    $check($db->fetchAllAssociative('SELECT * FROM trip_media WHERE trip_id = ?', [$liveId]) === $mediaBeforeConflict, 'Rejected HTTP saves preserve catch media rows.');
+    $check($mediaSnapshot() === $filesBeforeConflict, 'Rejected HTTP saves preserve original/thumbnail files byte for byte.');
+    $check($http('GET', '/api/trips/'.$liveId, 200, $owner)['json']['trip'] === $catchMedia, 'Reload returns both latest catches and media after a stale save.');
+    $http('GET', $immediatePhoto['url'], 200, $owner);
+    $http('GET', $immediatePhoto['thumbnailUrl'], 200, $owner);
+    $unrelated = $http('PATCH', '/api/trips/'.$liveId, 200, $owner, ['notes' => 'Unrelated correction', 'expectedFishRevision' => $firstCatch['fishRevision'], 'fishRevision' => 'forged', 'userId' => $otherId, 'lat' => 0])['json']['trip'];
+    $check($unrelated['fishRevision'] === $latestCatch['fishRevision'] && $unrelated['userId'] === $ownerId && $unrelated['lat'] === $base['lat'], 'Non-catch PATCH accepts a valid stale marker without broadening writable fields.');
+    $catchCorrection = $http('PATCH', '/api/trips/'.$liveId, 200, $owner, ['fishRecords' => [$fish, [...$secondFish, 'notes' => 'Corrected catch']], 'expectedFishRevision' => $latestCatch['fishRevision']])['json']['trip'];
+    $check($catchCorrection['fishRevision'] !== $latestCatch['fishRevision'] && $catchCorrection['fishRecords'][1]['images'][0]['id'] === $immediatePhoto['id'], 'Current revision accepts content-only catch corrections without removing photos.');
+    $legacyCatchSave = $http('PATCH', '/api/trips/'.$liveId, 200, $owner, ['fishRecords' => [$fish, $secondFish]])['json']['trip'];
+    $check($legacyCatchSave['fishRevision'] === $latestCatch['fishRevision'], 'Legacy catch PATCH without expectedFishRevision remains supported.');
+    $clearedCatches = $http('PATCH', '/api/trips/'.$liveId, 200, $owner, ['fishRecords' => [], 'expectedFishRevision' => $legacyCatchSave['fishRevision']])['json']['trip'];
+    $check($clearedCatches['fishRevision'] === $live['fishRevision'] && $clearedCatches['fishRecords'] === [], 'Current revision accepts deliberate removal and returns the new hash.');
+    $http('GET', $immediatePhoto['url'], 404, $owner);
+    $http('GET', $immediatePhoto['thumbnailUrl'], 404, $owner);
+
     $upload($journalId, $other, expected: 404);
     $upload($journalId, $owner, $uuid(), 404);
     $photo = $upload(strtoupper($journalId), $owner)['trip']['images'][0];
@@ -341,6 +405,7 @@ try {
     $check($published['lat'] === $base['lat'] && $published['locationName'] === $base['locationName'], 'Publication does not reduce the owner\'s private data.');
     $publicResponse = $http('GET', '/api/trips/'.$journalId, 200);
     $public = $publicResponse['json']['trip'];
+    $check(!array_key_exists('fishRevision', $public), 'Public detail never exposes the owner-only catch revision.');
     $check($public['lat'] === 37.99 && $public['lon'] === 23.77 && $public['locationName'] === 'Approximate fishing area', 'Public projection rounds coordinates and removes the private name.');
     $check($public['username'] === '' && $public['userId'] === '' && $public['displayName'] === '' && $public['spotId'] === $journalId, 'Public projection removes private identity and source identifiers.');
     $check($public['notes'] === '' && array_intersect(['notes', 'bait'], array_keys($public['fishRecords'][0])) === [], 'Trip/catch notes require explicit publication consent.');
@@ -351,6 +416,11 @@ try {
     $check($http('GET', '/api/trips/'.$journalId, 200, $other)['json']['trip'] === $public, 'Another signed-in owner receives the anonymous public projection.');
     $publicList = $http('GET', '/api/trips?scope=public', 200)['json']['trips'];
     $check(array_column($publicList, null, 'id')[$journalId] === $public, 'Public list and detail share the same redaction.');
+    foreach (['mine', 'visible', 'public'] as $scope) {
+        $ownerTrips = array_column($http('GET', '/api/trips?scope='.$scope, 200, $owner)['json']['trips'], null, 'id');
+        $check($ownerTrips[$journalId]['fishRevision'] === $published['fishRevision'], 'Every owner HTTP list scope includes the catch revision.');
+    }
+    $check($http('PATCH', '/api/trips/'.$journalId, 404, $other, ['fishRecords' => [], 'expectedFishRevision' => $journal['fishRevision']])['json'] === $denied, 'Public visibility does not grant revision conflict or edit access.');
     foreach ([$photo, $fishPhoto] as $media) {
         $http('GET', $media['url'], 200);
         $http('GET', $media['thumbnailUrl'], 200, $other);
@@ -383,7 +453,10 @@ try {
     $http('GET', '/api/trips/'.$liveId, 200);
     $http('GET', $livePhoto['url'], 200);
     $separate = $createTrip($base, $owner, $ownerId);
-    $finished = $http('PATCH', '/api/trips/'.$separate['id'], 200, $owner, ['status' => 'completed', 'outcome' => 'zero', 'visibility' => 'public'])['json']['trip'];
+    $finished = $http('PATCH', '/api/trips/'.$separate['id'], 200, $owner, ['status' => 'completed', 'outcome' => 'zero', 'visibility' => 'public', 'endedAt' => null])['json']['trip'];
+    $check($finished['endedAt'] === null && $finished['completedAt'] !== null, 'Live HTTP completion accepts explicit null end.');
+    $http('PATCH', '/api/trips/'.$separate['id'], 200, $owner, ['endedAt' => $historical['endedAt']]);
+    $check($http('PATCH', '/api/trips/'.$separate['id'], 200, $owner, ['endedAt' => null])['json']['trip']['endedAt'] === null, 'Completed live end can be cleared.');
     $check($finished['visibility'] === 'private', 'Explicit same-request completion and publication must also finish private.');
     $http('GET', '/api/trips/'.$separate['id'], 404);
 
@@ -469,6 +542,7 @@ try {
     $check($removed['outcome'] === 'not-recorded' && $removed['sharedMediaIds'] === [$photo['id']], 'Removing the final catch resets unknown outcome and prunes selected fish photos.');
     $http('GET', $fishPhoto['url'], 404, $owner);
     $removed = $http('DELETE', '/api/trips/'.$journalId.'/media/'.$unselected['id'], 200, $owner)['json']['trip'];
+    $check($removed['fishRevision'] === hash('sha256', '[]'), 'Media deletion also preserves the catch revision.');
     $check(count($removed['images']) === 1 && $removed['images'][0]['id'] === $photo['id'], 'Explicit photo deletion preserves the other selected image.');
     $http('GET', $unselected['url'], 404, $owner);
 

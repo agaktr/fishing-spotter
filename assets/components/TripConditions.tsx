@@ -42,28 +42,34 @@ const marineMetrics: Metric[] = [
   ["seaLevelMslM", "Στάθμη (MSL)", "m", "level"],
 ];
 const number = new Intl.NumberFormat("el-GR", { maximumFractionDigits: 2 });
+const highlights = ["windSpeedKmh", "windDirectionDeg", "gustKmh", "waveHeightM", "wavePeriodS", "seaSurfaceTemperatureC"];
 
-export function TripConditions({ weather, marine, pending = false, recordedAt, label, children }: {
-  weather?: WeatherSnapshot; marine?: MarineSnapshot; pending?: boolean; recordedAt?: string | null; label?: string; children?: ReactNode;
+export function TripConditions({ weather, marine, pending = false, recordedAt, label, children, description, sources }: {
+  weather?: WeatherSnapshot; marine?: MarineSnapshot; pending?: boolean; recordedAt?: string | null; label?: string; children?: ReactNode; description?: string; sources?: ReactNode;
 }) {
   const groups = [{ label: "Καιρός", snapshot: weather, metrics: weatherMetrics }, { label: "Θάλασσα", snapshot: marine, metrics: marineMetrics }];
-  return <section aria-label="Συνθήκες εξόρμησης" className="trip-conditions space-y-3">
-    <p className="ui-help">{pending ? "Στιγμιότυπο επιλεγμένου σημείου, όχι επιτόπια παρατήρηση. Παλιές συνθήκες και προγνώσεις δεν αποθηκεύονται ως παρατήρηση." : "Αποθηκευμένο στιγμιότυπο εξόρμησης, όχι τρέχουσες συνθήκες."}</p>
-    {groups.map(({ label, snapshot, metrics }) => <section key={label} aria-label={label} className="space-y-2">
-      <h4 className="ui-eyebrow">{label}</h4>
-      {snapshot?.sourceSnapshot && <p className="ui-help">Η αρχική πηγή δεν αντιστοιχεί χρονικά στην εξόρμηση. Οι συνθήκες είναι μη διαθέσιμες.</p>}
-      <dl className="trip-conditions-grid">{metrics.map(([key, title, unit, icon]) => {
-        const value = snapshot?.sourceSnapshot ? undefined : snapshot?.[key as keyof typeof snapshot];
-        const available = typeof value === "number" && Number.isFinite(value);
-        return <div key={key} className="trip-condition">
-          <dt><svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 shrink-0 text-tide" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={icons[icon]} /></svg>{title}</dt>
-          <dd className={available ? "font-black tabular-nums" : "text-xs text-slate-500"}>{available ? <>{number.format(value)} <span className="text-xs font-bold">{unit}</span></> : "Μη διαθέσιμο"}</dd>
-          {key === "pressureHpa" && weather?.pressureTrend && weather.pressureTrend !== "unknown" && !weather.sourceSnapshot && <p className="ui-help">Τάση: {{ rising: "ανοδική", falling: "πτωτική", stable: "σταθερή" }[weather.pressureTrend]}</p>}
-        </div>;
-      })}</dl>
-      {label === "Θάλασσα" && <p className="ui-help">Swell: αποθαλασσιά · MSL: μέση στάθμη θάλασσας.</p>}
-    </section>)}
-    <details className="rounded-xl border border-slate-200 p-3">
+  function metric([key, title, unit, icon]: Metric, snapshot?: WeatherSnapshot | MarineSnapshot) {
+    const value = snapshot?.sourceSnapshot ? undefined : snapshot?.[key as keyof typeof snapshot];
+    const available = typeof value === "number" && Number.isFinite(value);
+    return <div key={key} className="trip-condition">
+      <dt><svg aria-hidden="true" viewBox="0 0 24 24" className="h-5 w-5 shrink-0 text-tide" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d={icons[icon]} /></svg>{title}</dt>
+      <dd className={available ? "font-black tabular-nums" : "text-xs text-slate-500"}>{available ? <>{number.format(value)} <span className="text-xs font-bold">{unit}</span>{key === "windDirectionDeg" && <span className="ml-1 text-xs text-lagoon">{["Β", "ΒΑ", "Α", "ΝΑ", "Ν", "ΝΔ", "Δ", "ΒΔ"][Math.round(((value % 360 + 360) % 360) / 45) % 8]}</span>}</> : "Μη διαθέσιμο"}</dd>
+      {key === "pressureHpa" && weather?.pressureTrend && weather.pressureTrend !== "unknown" && !weather.sourceSnapshot && <p className="ui-help">Τάση: {{ rising: "ανοδική", falling: "πτωτική", stable: "σταθερή" }[weather.pressureTrend]}</p>}
+    </div>;
+  }
+  return <section aria-label={description ? "Συνθήκες σημείου" : "Συνθήκες εξόρμησης"} className="trip-conditions space-y-3">
+    <h3 className="font-bold">Συνθήκες</h3>
+    <p className="ui-help">{description ?? (pending ? "Στιγμιότυπο επιλεγμένου σημείου, όχι επιτόπια παρατήρηση. Παλιές συνθήκες και προγνώσεις δεν αποθηκεύονται ως παρατήρηση." : "Αποθηκευμένο στιγμιότυπο εξόρμησης, όχι τρέχουσες συνθήκες.")}</p>
+    {groups.some(({ snapshot }) => snapshot?.sourceSnapshot) && <p className="ui-help">Η αρχική πηγή δεν αντιστοιχεί χρονικά στην εξόρμηση. Οι συνθήκες είναι μη διαθέσιμες.</p>}
+    <dl className="trip-conditions-grid conditions-highlights">{highlights.map((key) => {
+      const group = groups.find(({ metrics }) => metrics.some(([id]) => id === key))!;
+      return metric(group.metrics.find(([id]) => id === key)!, group.snapshot);
+    })}</dl>
+    <details className="trip-disclosure"><summary>Όλες οι συνθήκες</summary><div className="space-y-3">
+      {groups.map(({ label, snapshot, metrics }) => <section key={label} aria-label={label} className="space-y-2"><h4 className="text-sm font-bold">{label}</h4><dl className="trip-conditions-grid">{metrics.filter(([key]) => !highlights.includes(key)).map((item) => metric(item, snapshot))}</dl></section>)}
+      <p className="ui-help">Swell: αποθαλασσιά · MSL: μέση στάθμη θάλασσας.</p>
+    </div></details>
+    {sources ?? <details className="trip-disclosure">
       <summary className="cursor-pointer text-sm font-bold">Πηγές δεδομένων</summary>
       <div className="mt-3 space-y-3">
         {label && <p className="ui-help">{label}</p>}
@@ -78,6 +84,6 @@ export function TripConditions({ weather, marine, pending = false, recordedAt, l
           </div>;
         })}
       </div>
-    </details>
+    </details>}
   </section>;
 }

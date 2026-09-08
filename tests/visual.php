@@ -28,6 +28,9 @@ if ($action === 'create') {
         'fishingMinutes' => 90, 'anglerCount' => 1, 'technique' => 'eging', 'techniqueLabel' => 'Eging',
         'locationName' => 'Private QA coastal diary', 'lat' => 37.936, 'lon' => 23.64,
         'notes' => 'A completed zero-catch trip, not a missing catch entry.',
+        'conditionsRecordedAt' => gmdate('Y-m-d\T10:00:00\Z', time() - 3 * 86400),
+        'weather' => ['validAt' => gmdate('Y-m-d\T10:00:00\Z', time() - 3 * 86400), 'temporalMode' => 'historical', 'airTemperatureC' => 24.6, 'apparentTemperatureC' => 25.8, 'windSpeedKmh' => 12.4, 'windDirectionDeg' => 0, 'gustKmh' => 19.2, 'relativeHumidityPct' => 68, 'pressureHpa' => 1014, 'pressureTrend' => 'stable', 'precipitationMm' => 0, 'cloudCoverPct' => 25, 'visibilityM' => 18000, 'confidence' => 'high'],
+        'marine' => ['validAt' => gmdate('Y-m-d\T10:00:00\Z', time() - 3 * 86400), 'temporalMode' => 'historical', 'seaSurfaceTemperatureC' => 23.1, 'waveHeightM' => 0.65, 'waveDirectionDeg' => 315, 'wavePeriodS' => 4.8, 'swellHeightM' => 0.3, 'swellDirectionDeg' => 300, 'swellPeriodS' => 7.2, 'currentSpeedKmh' => 0.8, 'currentDirectionDeg' => 90, 'seaLevelMslM' => -0.12, 'confidence' => 'high'],
     ]);
     $imagePath = dirname(__DIR__).'/var/'.$username.'.png';
     $image = imagecreatetruecolor(480, 320);

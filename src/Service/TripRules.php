@@ -62,8 +62,8 @@ final class TripRules
         if ($mode === 'live' && $input['visibility'] !== 'private') {
             throw new ApiException('Live trips must start private. Share only after completion.');
         }
-        if ($mode === 'historical' && ($input['endedAt'] === null || !$explicitOutcome)) {
-            throw new ApiException('Historical trips require an actual endedAt and an explicit outcome.');
+        if ($mode === 'historical' && !$explicitOutcome) {
+            throw new ApiException('Historical trips require an explicit outcome.');
         }
         // A new trip cannot already own any uploaded media.
         if ($input['sharedMediaIds'] !== []) {
@@ -135,9 +135,6 @@ final class TripRules
         }
         if ($before['status'] === 'active' && $trip['status'] === 'completed' && $trip['fishRecords'] === [] && !$explicitOutcome) {
             throw new ApiException('Choose zero catch or not-recorded explicitly when completing an empty trip.');
-        }
-        if ($trip['recordingMode'] === 'historical' && $trip['endedAt'] === null && $before['endedAt'] !== null) {
-            throw new ApiException('Historical trips require an actual endedAt.');
         }
 
         return $this->validateState($trip);
